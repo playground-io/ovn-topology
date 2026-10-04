@@ -1,5 +1,6 @@
 """FastAPI application and HTTP routes."""
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -36,7 +37,10 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return INDEX_HTML
+        return INDEX_HTML.replace(
+            "</head>",
+            f"<script>window.OVN_RENDERER = {json.dumps(cfg.renderer)};</script></head>",
+        )
 
     @app.get("/diagram.svg")
     def diagram(request: Request) -> Response:
@@ -49,11 +53,15 @@ def create_app(cfg: Config) -> FastAPI:
     def diagram_dot() -> str:
         return state.dot
 
+    @app.get("/diagram.mmd", response_class=PlainTextResponse)
+    def diagram_mermaid() -> str:
+        return state.mermaid
+
     @app.get("/status")
     def status() -> JSONResponse:
         return JSONResponse({"version": state.version, "updated": state.updated,
                              "error": state.error, "stats": state.stats,
-                             "trace_version": state.trace_version})
+                             "trace_version": state.trace_version, "renderer": cfg.renderer})
 
     @app.get("/trace-options")
     def trace_options() -> JSONResponse:

@@ -6,6 +6,7 @@ import time
 from .config import Config, State
 from .ovsdb import build_trace_options, fetch_all
 from .topology import build_dot
+from .mermaid import build_mermaid
 
 log = logging.getLogger("ovn-topology")
 
@@ -36,15 +37,20 @@ async def monitor(cfg: Config, state: State) -> None:
             dot, stats = build_dot(data)
             state.stats = stats
             if dot != last_dot:
-                state.svg = await render_svg(dot)
                 state.dot = dot
+                if cfg.renderer == "graphviz":
+                    state.svg = await render_svg(dot)
+                    output = state.svg
+                else:
+                    state.mermaid = build_mermaid(data)
+                    output = state.mermaid
                 state.version += 1
                 state.updated = time.time()
                 last_dot = dot
                 log.info("Topology changed -> v%d %s", state.version, stats)
                 if cfg.output:
                     with open(cfg.output, "w", encoding="utf-8") as f:
-                        f.write(state.svg)
+                        f.write(output)
             state.error = None
         except asyncio.CancelledError:
             raise

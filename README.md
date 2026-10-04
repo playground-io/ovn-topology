@@ -1,8 +1,8 @@
 # OVN Topology Live Viewer
 
 A FastAPI application that reads OVN Northbound and Southbound databases,
-renders the topology with Graphviz, and provides an in-browser `ovn-trace`
-builder.
+renders the topology with Graphviz or Mermaid, and provides an in-browser
+`ovn-trace` builder.
 
 ## Project layout
 
@@ -10,8 +10,9 @@ builder.
 - `ovn_topology_app/config.py` defines configuration and shared runtime state.
 - `ovn_topology_app/ovsdb.py` fetches and parses OVN database data.
 - `ovn_topology_app/topology.py` generates the Graphviz topology.
+- `ovn_topology_app/mermaid.py` generates the Mermaid flowchart.
 - `ovn_topology_app/trace.py` runs `ovn-trace`.
-- `ovn_topology_app/monitor.py` refreshes state and renders SVG.
+- `ovn_topology_app/monitor.py` refreshes state and renders the selected diagram.
 - `ovn_topology_app/web.py` defines the FastAPI app and HTTP routes.
 - `ovn_topology_app/static/` contains the browser UI, styles, and JavaScript.
 - `tests/` contains unit tests for data decoding and topology generation.
@@ -26,15 +27,25 @@ Install the application and its Python dependencies in editable mode:
 python -m pip install -e .
 ```
 
-Install Graphviz (including its `dot` executable) on the host running the
-viewer. The default configuration also expects Docker and the OVN command-line
-tools inside the configured container.
+The default Graphviz renderer requires Graphviz (including its `dot`
+executable) on the host running the viewer. Mermaid diagrams are rendered in
+the browser and load Mermaid from a CDN. The default configuration also expects
+Docker and the OVN command-line tools inside the configured container.
 
 ## Run
 
 ```powershell
 python ovn_topology.py --container ovn-central-az1 --port 8080
 ```
+
+Select Mermaid instead of the default Graphviz renderer with `--renderer`:
+
+```powershell
+python ovn_topology.py --container ovn-central-az1 --renderer mermaid --port 8080
+```
+
+With `--output`, Graphviz mode writes SVG and Mermaid mode writes Mermaid
+diagram source.
 
 Alternatively, run the installed command (`ovn-topology`) or use
 `python -m ovn_topology_app`.

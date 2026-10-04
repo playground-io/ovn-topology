@@ -444,7 +444,30 @@ const $ = id => document.getElementById(id);
     const prev = pz ? { zoom: pz.getZoom(), pan: pz.getPan() } : null;
     try { if (pz) pz.destroy(); } catch (e) {}
     pz = null; clientErr = '';
-    const svg = await (await fetch('/diagram.svg?v=' + version)).text();
+    let svg;
+    if (window.OVN_RENDERER === 'mermaid') {
+      try {
+        if (!window.mermaid) throw new Error('Mermaid library not loaded (CDN blocked?)');
+        const response = await fetch('/diagram.mmd?v=' + version);
+        if (!response.ok) throw new Error('Could not fetch Mermaid diagram: HTTP ' + response.status);
+        window.mermaid.initialize({
+          startOnLoad: false,
+          theme: 'dark',
+          themeVariables: {
+            background: '#0b1220',
+            primaryColor: '#1e293b',
+            primaryTextColor: '#e2e8f0',
+            lineColor: '#64748b'
+          }
+        });
+        svg = (await window.mermaid.render('ovn-topology-' + version, await response.text())).svg;
+      } catch (e) {
+        showErr('Mermaid render error: ' + e.message);
+        return;
+      }
+    } else {
+      svg = await (await fetch('/diagram.svg?v=' + version)).text();
+    }
     $('diagram').innerHTML = svg;
     const el = $('diagram').querySelector('svg');
     if (!el) return;
