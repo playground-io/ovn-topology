@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ovn-topology-viewer"
+version = "0.1.0"
+description = "Live OVN topology viewer with browser-based ovn-trace"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
+]
+
+[project.scripts]
+ovn-topology = "ovn_topology_app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ovn_topology_app*"]
+
+[tool.setuptools.package-data]
+ovn_topology_app = ["static/*.html", "static/*.css", "static/*.js"]

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OVN Topology Live Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header>
+  <h2>OVN Topology</h2>
+  <div class="chips" id="chips"></div>
+  <div class="status" id="status">Connecting...</div>
+</header>
+<div id="toolbar">
+  <input id="q" type="search" placeholder="Filter: name, IP, MAC, UUID...  ( / to focus, Enter to zoom )" autocomplete="off">
+  <label><input type="checkbox" data-kind="router"><span class="dot" style="background:#8b5cf6;border-radius:2px"></span>Routers</label>
+  <label><input type="checkbox" data-kind="switch"><span class="dot" style="background:#0284c7"></span>Switches</label>
+  <label><input type="checkbox" data-kind="port"><span class="dot" style="background:#64748b;border-radius:6px;width:13px"></span>Ports</label>
+  <label><input type="checkbox" data-kind="provider"><span class="dot" style="background:#ec4899"></span>Provider nets</label>
+  <label><input type="checkbox" data-kind="chassis"><span class="dot" style="background:#f59e0b"></span>Chassis</label>
+  <select id="status-f" title="Port status">
+    <option value="all">All ports</option><option value="up">Ports UP</option><option value="down">Ports DOWN / disabled</option>
+  </select>
+  <select id="hops" title="How many links away from a match to keep visible">
+    <option value="0">Context: none</option><option value="1">Context: 1 hop</option><option value="2">Context: 2 hops</option><option value="3">Context: 3 hops</option>
+  </select>
+  <select id="mode" title="What to do with non-matching items">
+    <option value="dim">Dim others</option><option value="hide">Hide others</option>
+  </select>
+  <button id="fit">Fit to visible</button>
+  <button id="reset">Reset</button>
+  <span id="count"></span>
+</div>
+<details id="trace-panel">
+  <summary>Run OVN trace</summary>
+  <small>Required: ingress port and source/destination MACs. IP addresses and extra fields are optional. Field choices depend on selected IP version and protocol: choose an IP address or eth.type before IP fields, then choose ip.proto before TCP, UDP, or ICMP fields. Values are suggested from this datapath where OVN data provides them; you can also type values.</small>
+  <form id="trace-form">
+    <label>Logical switch or router
+      <select name="datapath" id="trace-datapath" required disabled>
+        <option value="">Loading OVN datapaths...</option>
+      </select>
+    </label>
+    <label>Ingress port
+      <select name="inport" id="trace-inport" required disabled>
+        <option value="">Select a datapath first</option>
+      </select>
+    </label>
+    <label>Source MAC
+      <select name="eth_src" id="trace-src-mac" required disabled>
+        <option value="">Select a datapath first</option>
+      </select>
+    </label>
+    <label>Destination MAC
+      <select name="eth_dst" id="trace-dst-mac" required disabled>
+        <option value="">Select a datapath first</option>
+      </select>
+    </label>
+    <label>Source IP (optional)
+      <select name="ip_src" id="trace-src-ip" disabled>
+        <option value="">No IP (L2 trace)</option>
+      </select>
+    </label>
+    <label>Destination IP (optional)
+      <select name="ip_dst" id="trace-dst-ip" disabled>
+        <option value="">No IP (L2 trace)</option>
+      </select>
+    </label>
+    <div id="trace-extra-fields" aria-live="polite"></div>
+    <button id="trace-add-field" type="button">Add trace field</button>
+    <button id="trace-submit" type="submit" disabled>Trace</button>
+    <span id="trace-status" role="status" aria-live="polite"></span>
+  </form>
+  <pre id="trace-output" aria-label="OVN trace results"></pre>
+</details>
+<div id="banner"></div>
+<div id="container">
+  <div id="diagram"></div>
+  <div class="hint legend">
+    <span><b style="color:#8b5cf6">&#11043;</b> Router</span>
+    <span><b style="color:#0ea5e9">&#9641;</b> Switch</span>
+    <span><b style="color:#94a3b8">&#9645;</b> Port</span>
+    <span><b style="color:#ec4899">&#9729;</b> Provider net</span>
+    <span><b style="color:#f59e0b">&#9707;</b> Chassis</span>
+    <span><b style="color:#22c55e">&#9679;</b> UP</span>
+    <span><b style="color:#ef4444">&#9679;</b> DOWN</span>
+    <br><b>Wheel</b> zoom &middot; <b>Drag</b> pan &middot; <b>Double click</b> reset &middot; hover a node for full UUID
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
+
