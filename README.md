@@ -27,6 +27,8 @@ Install the application and its Python dependencies in editable mode:
 python -m pip install -e .
 ```
 
+Use Python 3.10 or newer, as required by the project metadata.
+
 The default Graphviz renderer requires Graphviz (including its `dot`
 executable) on the host running the viewer. Mermaid diagrams are rendered in
 the browser and load Mermaid from a CDN. The default configuration also expects
@@ -55,6 +57,8 @@ through Docker, pass `--container ""`. Remote database addresses can be
 specified with `--nb-db` and `--sb-db`.
 
 ## Test
+
+Run the test suite with Python 3.10 or newer:
 
 ```powershell
 python -m unittest discover -s tests
