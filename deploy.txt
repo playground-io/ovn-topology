@@ -1,0 +1,46 @@
+dnf -y upgrade
+dnf install -y epel-release git python3.14 graphviz-python3.x86_64
+dnf install -y dnf-utils
+dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable docker
+systemctl start docker
+systemctl stop firewalld
+systemctl disable firewalld
+dnf config-manager --set-enabled crb
+dnf install -y centos-release-nfv-openvswitch
+dnf install -y openvswitch3.5
+systemctl enable --now openvswitch
+systemctl start --now openvswitch
+update-alternatives --install /usr/bin/python python /usr/bin/python3.14 1
+update-alternatives --auto python
+reboot
+mkdir ovn
+python -m venv ovn
+cd ovn
+source bin/activate
+pip install -U pip
+git clone https://github.com/openvswitch/ovs.git
+git clone https://github.com/ovn-org/ovn.git
+git clone https://github.com/ovn-org/ovn-fake-multinode.git
+git clone https://github.com/playground-io/ovn-topology.git
+cd ovn-topology
+python -m pip install -e .
+cd ../ovn-fake-multinode
+RUNC_CMD=docker OVN_SRC_PATH=../ovn OVS_SRC_PATH=../ovs ./ovn_cluster.sh build
+/usr/share/openvswitch/scripts/ovs-ctl --system-id=testovn start
+RUNC_CMD=docker ./ovn-fake-multinode/ovn_cluster.sh start
+cd ..
+alias ovn-nbctl='docker exec -it ovn-central-az1 ovn-nbctl'
+alias ovn-sbctl='docker exec -it ovn-central-az1 ovn-sbctl'
+alias ovn-trace='docker exec -it ovn-central-az1 ovn-trace'
+#./ovn_cluster.sh stop
+# look for start-container and configure-ovn functions in
+#vi ./ovn_cluster.sh
+#./ovn_cluster.sh start
+
+cd ovn-topology
+python ovn_topology.py --container ovn-central-az1 --port 8080
+nohup python ovn_topology.py --container ovn-central-az1 --port 8080 > ovn_topology.log 2>&1 &
+tail -f ovn_topology.log
+pkill -f "ovn_topology.py"
