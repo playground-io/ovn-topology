@@ -66,6 +66,17 @@ def edge_label(lines: list[str]) -> str:
     return "<" + "<BR/>".join(esc(x) for x in lines if x) + ">"
 
 
+def resource_node(node_id: str, kind: str, name: str, details: list[str],
+                  *, fill: str, border: str, tooltip: str = "") -> str:
+    lines = [t(kind.upper(), 8, border), t(name, 11, "#ffffff", True)]
+    lines.extend(t(detail, 9, C_MUTED) for detail in details if detail)
+    return "  " + shaped(
+        node_id, "box", label(*lines), fill=fill, border=border,
+        tooltip=tooltip or name, cls="resource " + kind.lower(),
+        style="rounded,filled", penwidth=1.5, margin="0.16,0.09",
+    )
+
+
 def nat_line(n: dict) -> str:
     kind, ext, log_ip = n.get("type", ""), n.get("external_ip", ""), n.get("logical_ip", "")
     if kind == "snat":
@@ -96,6 +107,16 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
     routes = {r["_uuid"]: r for r in nb("Logical_Router_Static_Route")}
     nats = {r["_uuid"]: r for r in nb("NAT")}
     lbs = {r["_uuid"]: r for r in nb("Load_Balancer")}
+    lb_groups = {r["_uuid"]: r for r in nb("Load_Balancer_Group")}
+    policies = {r["_uuid"]: r for r in nb("Logical_Router_Policy")}
+    acls = {r["_uuid"]: r for r in nb("ACL")}
+    dhcp_options = {r["_uuid"]: r for r in nb("DHCP_Options")}
+    dns_rows = {r["_uuid"]: r for r in nb("DNS")}
+    address_sets = {r["_uuid"]: r for r in nb("Address_Set")}
+    port_groups = {r["_uuid"]: r for r in nb("Port_Group")}
+    meters = {r["_uuid"]: r for r in nb("Meter")}
+    meters_by_name = {r.get("name"): r for r in meters.values()}
+    qos_rules = {r["_uuid"]: r for r in nb("QoS")}
 
     lrp_owner: dict[str, str] = {}  # lrp name -> router uuid
     for r in routers:
@@ -130,6 +151,7 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
     provider_node_ids: dict[str, str] = {}
     switch_ports_seen: set[str] = set()
     router_ports_seen: set[str] = set()
+    rendered_resources: set[tuple[str, str]] = set()
     router_links: set[frozenset] = set()
     n_ports = n_up = n_down = 0
 
@@ -333,6 +355,330 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
             if cu:
                 chassis_port_count[cu] = chassis_port_count.get(cu, 0) + 1
             edges.append(f'  {q(sid)} -> {q(pid)} [dir=none, color="#334155", penwidth=1.2];')
+
+    def add_resource(kind: str, row: dict, name: str, details: list[str],
+                     parent_id: str | None = None, *, color: str) -> str:
+        row_uuid = row.get("_uuid", "")
+        node_id = f"resource_{kind}_{row_uuid or len(rendered_resources)}"
+        key = (kind, node_id)
+        if key not in rendered_resources:
+            rendered_resources.add(key)
+            dot.append(resource_node(
+                node_id, kind, name, details,
+                fill="#111c2e", border=color,
+                tooltip=f"{kind}: {name}" + (f" | {row_uuid}" if row_uuid else ""),
+            ))
+        if parent_id:
+            edges.append(
+                f'  {q(parent_id)} -> {q(node_id)} '
+                f'[dir=none, style=dashed, color="{color}", constraint=false];'
+            )
+        return node_id
+
+    # Render referenced NB configuration rows as individual nodes. A short
+    # label on a switch/router is useful for overview; these nodes preserve the
+    # complete list and connect each object to its logical owner.
+    for switch in switches:
+        switch_id = f"switch_{switch['_uuid']}"
+        for acl_uuid in as_list(switch.get("acls")):
+            acl = acls.get(acl_uuid)
+            if acl:
+                acl_id = add_resource(
+                    "acl", acl, acl.get("name") or acl_uuid[:8],
+                    [
+                        f"{acl.get('direction', '')} · priority {acl.get('priority', '')}",
+                        f"{acl.get('action', '')}: {acl.get('match', '')}",
+                        f"meter: {acl.get('meter')}" if acl.get("meter") else "",
+                        f"severity: {acl.get('severity')}" if acl.get("severity") else "",
+                    ],
+                    switch_id, color=C_BAD if acl.get("action") in ("drop", "reject") else C_SWITCH,
+                )
+                meter = meters_by_name.get(acl.get("meter"))
+                if meter:
+                    meter_id = add_resource(
+                        "meter", meter, meter.get("name", meter["_uuid"][:8]),
+                        [f"{len(as_list(meter.get('bands')))} bands"],
+                        None, color="#f59e0b",
+                    )
+                    edges.append(
+                        f'  {q(acl_id)} -> {q(meter_id)} '
+                        '[dir=none, style=dashed, color="#f59e0b", constraint=false];'
+                    )
+
+        for qos_uuid in as_list(switch.get("qos_rules")):
+            qos = qos_rules.get(qos_uuid)
+            if qos:
+                add_resource(
+                    "qos", qos, as_map(qos.get("external_ids")).get("name", qos_uuid[:8]),
+                    [
+                        f"{qos.get('direction', '')} · priority {qos.get('priority', '')}",
+                        qos.get("match", ""),
+                        f"action: {as_map(qos.get('action'))}",
+                    ],
+                    switch_id, color="#38bdf8",
+                )
+
+        for dns_uuid in as_list(switch.get("dns_records")):
+            dns = dns_rows.get(dns_uuid)
+            if dns:
+                records = [f"{domain} -> {address}" for domain, address in
+                           sorted(as_map(dns.get("records")).items())]
+                add_resource("dns", dns, f"DNS records ({len(records)})", records,
+                             switch_id, color="#2dd4bf")
+
+    for router in routers:
+        router_id = f"router_{router['_uuid']}"
+        for route_uuid in as_list(router.get("static_routes")):
+            route = routes.get(route_uuid)
+            if route:
+                add_resource(
+                    "route", route, route.get("ip_prefix", route_uuid[:8]),
+                    [
+                        f"next hop: {route.get('nexthop', '')}",
+                        f"policy: {first(route.get('policy'))}" if first(route.get("policy")) else "",
+                        f"output port: {first(route.get('output_port'))}" if first(route.get("output_port")) else "",
+                    ],
+                    router_id, color="#a78bfa",
+                )
+
+        for policy_uuid in as_list(router.get("policies")):
+            policy = policies.get(policy_uuid)
+            if policy:
+                add_resource(
+                    "policy", policy, f"priority {policy.get('priority', '')}",
+                    [
+                        policy.get("match", ""),
+                        f"action: {policy.get('action', '')}",
+                        f"next hops: {', '.join(as_list(policy.get('nexthops')))}"
+                        if as_list(policy.get("nexthops")) else "",
+                    ],
+                    router_id, color="#a78bfa",
+                )
+
+        for nat_uuid in as_list(router.get("nat")):
+            nat = nats.get(nat_uuid)
+            if nat:
+                add_resource(
+                    "nat", nat, nat.get("type", "NAT").upper(),
+                    [
+                        f"external IP: {nat.get('external_ip', '')}",
+                        f"logical IP: {nat.get('logical_ip', '')}",
+                        f"logical port: {nat.get('logical_port', '')}" if nat.get("logical_port") else "",
+                    ],
+                    router_id, color=C_PROVIDER,
+                )
+
+        for lb_uuid in as_list(router.get("load_balancer")):
+            lb = lbs.get(lb_uuid)
+            if lb:
+                vips = [f"{vip} -> {backend}" for vip, backend in
+                        sorted(as_map(lb.get("vips")).items())]
+                add_resource(
+                    "load balancer", lb, lb.get("name", lb_uuid[:8]),
+                    [f"protocol: {first(lb.get('protocol')) or 'unspecified'}"] + clip(vips, 6),
+                    router_id, color=C_PROVIDER,
+                )
+
+        for group_uuid in as_list(router.get("load_balancer_group")):
+            group = lb_groups.get(group_uuid)
+            if group:
+                group_id = add_resource(
+                    "load balancer group", group, group.get("name", group_uuid[:8]),
+                    [f"{len(as_list(group.get('load_balancers')))} load balancers"],
+                    router_id, color=C_PROVIDER,
+                )
+                for lb_uuid in as_list(group.get("load_balancers")):
+                    lb = lbs.get(lb_uuid)
+                    if lb:
+                        vips = [f"{vip} -> {backend}" for vip, backend in
+                                sorted(as_map(lb.get("vips")).items())]
+                        lb_id = add_resource(
+                            "load balancer", lb, lb.get("name", lb_uuid[:8]),
+                            [f"protocol: {first(lb.get('protocol')) or 'unspecified'}"] + clip(vips, 6),
+                            None, color=C_PROVIDER,
+                        )
+                        edges.append(
+                            f'  {q(group_id)} -> {q(lb_id)} '
+                            '[dir=none, style=dashed, color="#ec4899", constraint=false];'
+                        )
+
+    for switch in switches:
+        switch_id = f"switch_{switch['_uuid']}"
+        for lb_uuid in as_list(switch.get("load_balancer")):
+            lb = lbs.get(lb_uuid)
+            if lb:
+                vips = [f"{vip} -> {backend}" for vip, backend in
+                        sorted(as_map(lb.get("vips")).items())]
+                add_resource(
+                    "load balancer", lb, lb.get("name", lb_uuid[:8]),
+                    [f"protocol: {first(lb.get('protocol')) or 'unspecified'}"] + clip(vips, 6),
+                    switch_id, color=C_PROVIDER,
+                )
+        for group_uuid in as_list(switch.get("load_balancer_group")):
+            group = lb_groups.get(group_uuid)
+            if group:
+                group_id = add_resource(
+                    "load balancer group", group, group.get("name", group_uuid[:8]),
+                    [f"{len(as_list(group.get('load_balancers')))} load balancers"],
+                    switch_id, color=C_PROVIDER,
+                )
+                for lb_uuid in as_list(group.get("load_balancers")):
+                    lb = lbs.get(lb_uuid)
+                    if lb:
+                        vips = [f"{vip} -> {backend}" for vip, backend in
+                                sorted(as_map(lb.get("vips")).items())]
+                        lb_id = add_resource(
+                            "load balancer", lb, lb.get("name", lb_uuid[:8]),
+                            [f"protocol: {first(lb.get('protocol')) or 'unspecified'}"] + clip(vips, 6),
+                            None, color=C_PROVIDER,
+                        )
+                        edges.append(
+                            f'  {q(group_id)} -> {q(lb_id)} '
+                            '[dir=none, style=dashed, color="#ec4899", constraint=false];'
+                        )
+
+    switch_port_node_ids = {
+        port_uuid: (
+            f"switch_router_port_{port_uuid}" if port_uuid in switch_ports_seen and (port.get("type") or "") == "router"
+            else f"localnet_port_{port_uuid}" if port_uuid in switch_ports_seen and (port.get("type") or "") == "localnet"
+            else f"port_{port_uuid}"
+        )
+        for port_uuid, port in lsp.items()
+    }
+    for port in lsp.values():
+        port_id = switch_port_node_ids[port["_uuid"]]
+        for column in ("dhcpv4_options", "dhcpv6_options"):
+            for option_uuid in as_list(port.get(column)):
+                options = dhcp_options.get(option_uuid)
+                if options:
+                    settings = [f"{key}: {value}" for key, value in
+                                sorted(as_map(options.get("options")).items())]
+                    add_resource(
+                        "dhcp", options, f"{column[4:].upper()} · {options.get('cidr', '')}",
+                        settings, port_id, color="#38bdf8",
+                    )
+
+    for group in port_groups.values():
+        group_id = add_resource(
+            "port group", group, group.get("name", group.get("_uuid", "")[:8]),
+            [f"{len(as_list(group.get('ports')))} ports",
+             f"{len(as_list(group.get('acls')))} ACLs"],
+            None, color=C_SWITCH,
+        )
+        for port_uuid in as_list(group.get("ports")):
+            if port_uuid in switch_port_node_ids:
+                edges.append(
+                    f'  {q(group_id)} -> {q(switch_port_node_ids[port_uuid])} '
+                    '[dir=none, style=dashed, color="#0ea5e9", constraint=false];'
+                )
+        for acl_uuid in as_list(group.get("acls")):
+            acl = acls.get(acl_uuid)
+            if acl:
+                acl_id = add_resource(
+                    "acl", acl, acl.get("name") or acl_uuid[:8],
+                    [
+                        f"{acl.get('direction', '')} · priority {acl.get('priority', '')}",
+                        f"{acl.get('action', '')}: {acl.get('match', '')}",
+                    ],
+                    None, color=C_BAD if acl.get("action") in ("drop", "reject") else C_SWITCH,
+                )
+                edges.append(
+                    f'  {q(group_id)} -> {q(acl_id)} '
+                    '[dir=none, style=dashed, color="#0ea5e9", constraint=false];'
+                )
+
+    for address_set in address_sets.values():
+        add_resource(
+            "address set", address_set, address_set.get("name", address_set.get("_uuid", "")[:8]),
+            [f"{len(as_list(address_set.get('addresses')))} addresses"]
+            + clip(sorted(as_list(address_set.get("addresses"))), 6),
+            None, color="#2dd4bf",
+        )
+
+    for meter in meters.values():
+        add_resource(
+            "meter", meter, meter.get("name", meter.get("_uuid", "")[:8]),
+            [f"{len(as_list(meter.get('bands')))} bands"],
+            None, color="#f59e0b",
+        )
+
+    # Also show rows that exist in a fetched table but are not referenced by a
+    # logical switch/router/port. Their presence may indicate incomplete
+    # configuration, but they must not disappear from the database view.
+    for policy in policies.values():
+        add_resource(
+            "policy", policy, f"priority {policy.get('priority', '')}",
+            [policy.get("match", ""), f"action: {policy.get('action', '')}"],
+            None, color="#a78bfa",
+        )
+    for route in routes.values():
+        add_resource(
+            "route", route, route.get("ip_prefix", route.get("_uuid", "")[:8]),
+            [f"next hop: {route.get('nexthop', '')}"],
+            None, color="#a78bfa",
+        )
+    for nat in nats.values():
+        add_resource(
+            "nat", nat, nat.get("type", "NAT").upper(),
+            [f"external IP: {nat.get('external_ip', '')}",
+             f"logical IP: {nat.get('logical_ip', '')}"],
+            None, color=C_PROVIDER,
+        )
+    for lb in lbs.values():
+        vips = [f"{vip} -> {backend}" for vip, backend in sorted(as_map(lb.get("vips")).items())]
+        add_resource(
+            "load balancer", lb, lb.get("name", lb.get("_uuid", "")[:8]),
+            [f"protocol: {first(lb.get('protocol')) or 'unspecified'}"] + clip(vips, 6),
+            None, color=C_PROVIDER,
+        )
+    for group in lb_groups.values():
+        add_resource(
+            "load balancer group", group, group.get("name", group.get("_uuid", "")[:8]),
+            [f"{len(as_list(group.get('load_balancers')))} load balancers"],
+            None, color=C_PROVIDER,
+        )
+    for acl in acls.values():
+        acl_id = add_resource(
+            "acl", acl, acl.get("name") or acl.get("_uuid", "")[:8],
+            [
+                f"{acl.get('direction', '')} · priority {acl.get('priority', '')}",
+                f"{acl.get('action', '')}: {acl.get('match', '')}",
+                f"meter: {acl.get('meter')}" if acl.get("meter") else "",
+            ],
+            None, color=C_BAD if acl.get("action") in ("drop", "reject") else C_SWITCH,
+        )
+        meter = meters_by_name.get(acl.get("meter"))
+        if meter:
+            meter_id = add_resource(
+                "meter", meter, meter.get("name", meter.get("_uuid", "")[:8]),
+                [f"{len(as_list(meter.get('bands')))} bands"],
+                None, color="#f59e0b",
+            )
+            edges.append(
+                f'  {q(acl_id)} -> {q(meter_id)} '
+                '[dir=none, style=dashed, color="#f59e0b", constraint=false];'
+            )
+    for options in dhcp_options.values():
+        settings = [f"{key}: {value}" for key, value in sorted(as_map(options.get("options")).items())]
+        add_resource(
+            "dhcp", options, f"DHCP · {options.get('cidr', '')}",
+            settings, None, color="#38bdf8",
+        )
+    for dns in dns_rows.values():
+        records = [f"{domain} -> {address}" for domain, address in
+                   sorted(as_map(dns.get("records")).items())]
+        add_resource("dns", dns, f"DNS records ({len(records)})", records,
+                     None, color="#2dd4bf")
+    for qos in qos_rules.values():
+        add_resource(
+            "qos", qos, as_map(qos.get("external_ids")).get("name", qos.get("_uuid", "")[:8]),
+            [
+                f"{qos.get('direction', '')} · priority {qos.get('priority', '')}",
+                qos.get("match", ""),
+                f"action: {as_map(qos.get('action'))}",
+            ],
+            None, color="#38bdf8",
+        )
 
     # Keep database rows visible even if the parent switch/router reference is
     # incomplete, so a diagram does not silently hide orphaned logical ports.

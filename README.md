@@ -9,7 +9,9 @@ renders the topology with Graphviz or Mermaid, and provides an in-browser
 - `ovn_topology.py` is the backwards-compatible command-line launcher.
 - `ovn_topology_app/config.py` defines configuration and shared runtime state.
 - `ovn_topology_app/ovsdb.py` fetches and parses OVN database data.
-- `ovn_topology_app/topology.py` generates the Graphviz topology.
+- `ovn_topology_app/topology.py` generates the Graphviz topology, including
+  individual nodes for Northbound ports, routes, policies, ACLs, NAT, DHCP,
+  DNS, load balancers, and related network resources.
 - `ovn_topology_app/mermaid.py` generates the Mermaid flowchart.
 - `ovn_topology_app/trace.py` runs `ovn-trace`.
 - `ovn_topology_app/monitor.py` refreshes state and renders the selected diagram.

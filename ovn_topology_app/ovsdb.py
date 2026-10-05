@@ -11,6 +11,8 @@ from .config import Config
 NB_TABLES = [
     "Logical_Switch", "Logical_Switch_Port", "Logical_Router", "Logical_Router_Port",
     "Logical_Router_Static_Route", "Logical_Router_Policy", "NAT", "Load_Balancer",
+    "Load_Balancer_Group", "ACL", "DHCP_Options", "DNS", "Address_Set",
+    "Port_Group", "Meter", "QoS",
 ]
 SB_TABLES = ["Chassis", "Encap", "Port_Binding"]
 REQUIRED = {"nb:Logical_Switch", "nb:Logical_Switch_Port", "nb:Logical_Router",
