@@ -383,17 +383,18 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
         for acl_uuid in as_list(switch.get("acls")):
             acl = acls.get(acl_uuid)
             if acl:
+                meter_name = first(acl.get("meter"))
                 acl_id = add_resource(
                     "acl", acl, acl.get("name") or acl_uuid[:8],
                     [
                         f"{acl.get('direction', '')} · priority {acl.get('priority', '')}",
                         f"{acl.get('action', '')}: {acl.get('match', '')}",
-                        f"meter: {acl.get('meter')}" if acl.get("meter") else "",
+                        f"meter: {meter_name}" if meter_name else "",
                         f"severity: {acl.get('severity')}" if acl.get("severity") else "",
                     ],
                     switch_id, color=C_BAD if acl.get("action") in ("drop", "reject") else C_SWITCH,
                 )
-                meter = meters_by_name.get(acl.get("meter"))
+                meter = meters_by_name.get(meter_name)
                 if meter:
                     meter_id = add_resource(
                         "meter", meter, meter.get("name", meter["_uuid"][:8]),
@@ -638,16 +639,17 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
             None, color=C_PROVIDER,
         )
     for acl in acls.values():
+        meter_name = first(acl.get("meter"))
         acl_id = add_resource(
             "acl", acl, acl.get("name") or acl.get("_uuid", "")[:8],
             [
                 f"{acl.get('direction', '')} · priority {acl.get('priority', '')}",
                 f"{acl.get('action', '')}: {acl.get('match', '')}",
-                f"meter: {acl.get('meter')}" if acl.get("meter") else "",
+                f"meter: {meter_name}" if meter_name else "",
             ],
             None, color=C_BAD if acl.get("action") in ("drop", "reject") else C_SWITCH,
         )
-        meter = meters_by_name.get(acl.get("meter"))
+        meter = meters_by_name.get(meter_name)
         if meter:
             meter_id = add_resource(
                 "meter", meter, meter.get("name", meter.get("_uuid", "")[:8]),

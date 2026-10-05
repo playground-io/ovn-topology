@@ -248,6 +248,35 @@ class TopologyTests(unittest.TestCase):
         self.assertIn("web.example.test", dot)
         self.assertIn("web-meter", dot)
 
+    def test_build_dot_handles_acl_without_meter(self):
+        data = {
+            "nb:Logical_Switch": [
+                {"_uuid": "switch-1", "name": "sw-tenant2", "ports": [], "acls": ["acl-1"]},
+            ],
+            "nb:Logical_Router": [],
+            "nb:Logical_Switch_Port": [],
+            "nb:Logical_Router_Port": [],
+            "nb:ACL": [
+                {
+                    "_uuid": "acl-1",
+                    "direction": "to-lport",
+                    "priority": 3000,
+                    "match": 'outport == "port-vm-c" && ct.est && !ct.rel',
+                    "action": "allow-related",
+                    "meter": [],
+                    "severity": [],
+                },
+            ],
+            "nb:Meter": [],
+        }
+
+        dot, _ = build_dot(data)
+
+        self.assertIn("outport == &quot;port-vm-c&quot;", dot)
+        self.assertIn("&amp;&amp; ct.est &amp;&amp; !ct.rel", dot)
+        self.assertIn("allow-related", dot)
+        self.assertIn('"resource_acl_acl-1" [', dot)
+
 
 if __name__ == "__main__":
     unittest.main()
