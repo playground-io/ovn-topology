@@ -127,6 +127,9 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
     chassis_port_count: dict[str, int] = {}
     chassis_node_id = lambda cu: f"chassis_{cu}"  # noqa: E731
     provider_nets: set[str] = set()
+    provider_node_ids: dict[str, str] = {}
+    switch_ports_seen: set[str] = set()
+    router_ports_seen: set[str] = set()
     router_links: set[frozenset] = set()
     n_ports = n_up = n_down = 0
 
@@ -175,6 +178,30 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
         dot.append("  " + shaped(f"router_{r['_uuid']}", "hexagon", label(*lines), fill="#1e1b4b", border=C_ROUTER,
                                  tooltip=f"{r['name']} | {r['_uuid']}", cls="router", penwidth=2.5,
                                  margin="0.3,0.2"))
+        for lrp in lrps:
+            router_ports_seen.add(lrp["_uuid"])
+            router_port_id = f"router_port_{lrp['_uuid']}"
+            gw = lrp["name"] in lrp_active_gw or bool(as_list(lrp.get("gateway_chassis"))) \
+                or bool(first(lrp.get("ha_chassis_group")))
+            lrp_lines = [
+                t("ROUTER PORT", 8, "#c4b5fd"),
+                t(lrp["name"], 11, "#ffffff", True),
+                t("MAC: " + lrp.get("mac", "N/A"), 9, C_MUTED),
+            ]
+            lrp_lines += [t("IP: " + address, 9, C_MUTED) for address in as_list(lrp.get("networks"))]
+            if gw:
+                lrp_lines.append(t("GATEWAY", 8, C_CHASSIS, True))
+            if first(lrp.get("enabled")) is False:
+                lrp_lines.append(t("DISABLED", 8, C_BAD, True))
+            dot.append("  " + shaped(
+                router_port_id, "box", label(*lrp_lines), fill="#1e1b4b", border=C_ROUTER,
+                tooltip=f"{lrp['name']} | {lrp.get('_uuid', '')}", cls="port router-port",
+                style="rounded,filled", penwidth=1.8, margin="0.16,0.09",
+            ))
+            edges.append(
+                f'  {q("router_" + r["_uuid"])} -> {q(router_port_id)} '
+                '[dir=none, color="#a78bfa", penwidth=1.8];'
+            )
 
     # ---- Switches (3D box) + ports ----------------------------------------------
     for s in switches:
@@ -203,6 +230,7 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
                                  margin="0.3,0.18"))
 
         for p in ports:
+            switch_ports_seen.add(p["_uuid"])
             ptype = p.get("type") or ""
             opts = as_map(p.get("options"))
             n_ports += 1
@@ -210,41 +238,69 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
             if ptype == "router":
                 lrp_name = opts.get("router-port", "")
                 lrp = lrp_by_name.get(lrp_name)
-                owner = lrp_owner.get(lrp_name)
-                if not lrp or not owner:
-                    continue
-                gw = lrp_name in lrp_active_gw or bool(as_list(lrp.get("gateway_chassis"))) \
-                    or bool(first(lrp.get("ha_chassis_group")))
-                lines = [f"LRP: {lrp_name}", f"MAC: {lrp.get('mac', 'N/A')}"]
-                lines += [f"IP: {n}" for n in as_list(lrp.get("networks"))]
-                if gw:
-                    lines.append("(gateway port)")
-                if first(lrp.get("enabled")) is False:
-                    lines.append("DISABLED")
-                edges.append(f'  {q("router_" + owner)} -> {q(sid)} [dir=both, color="#a78bfa", '
-                             f'fontcolor="#c4b5fd", penwidth=2.2, label={edge_label(lines)}];')
+                pid = f"switch_router_port_{p['_uuid']}"
+                lrp_owner_uuid = lrp_owner.get(lrp_name)
+                lines = [
+                    t("ROUTER ATTACHMENT", 8, "#c4b5fd"),
+                    t(p["name"], 11, "#ffffff", True),
+                    t("peer: " + (lrp_name or "not configured"), 9, C_MUTED),
+                ]
+                if not lrp or not lrp_owner_uuid:
+                    lines.append(t("router-port reference unresolved", 8, C_BAD))
+                dot.append("  " + shaped(
+                    pid, "box", label(*lines), fill="#172033", border=C_ROUTER,
+                    tooltip=f"{p['name']} | {p.get('_uuid', '')}", cls="port router-attachment",
+                    style="rounded,filled", penwidth=1.8, margin="0.16,0.09",
+                ))
+                edges.append(
+                    f'  {q(sid)} -> {q(pid)} [dir=none, color="#475569", penwidth=1.2];'
+                )
+                if lrp and lrp_owner_uuid:
+                    edges.append(
+                        f'  {q(pid)} -> {q("router_port_" + lrp["_uuid"])} '
+                        '[dir=none, color="#a78bfa", penwidth=1.8];'
+                    )
                 gcu = lrp_active_gw.get(lrp_name)
-                if gcu in chassis:
-                    edges.append(f'  {q("router_" + owner)} -> {q(chassis_node_id(gcu))} '
+                if gcu in chassis and lrp_owner_uuid:
+                    edges.append(f'  {q("router_" + lrp_owner_uuid)} -> {q(chassis_node_id(gcu))} '
                                  f'[style=dotted, color="{C_CHASSIS}", fontcolor="{C_CHASSIS}", '
                                  f'label={edge_label(["active gw", lrp_name])}, constraint=false];')
                 continue
 
             if ptype == "localnet":
                 net = opts.get("network_name", "?")
-                pid = f"provider_{net}"
+                provider_id = provider_node_ids.get(net)
+                if provider_id is None:
+                    provider_id = f"provider_net_{len(provider_node_ids)}"
+                    provider_node_ids[net] = provider_id
                 if net not in provider_nets:
                     provider_nets.add(net)
                     cloud = f'<FONT COLOR="#f9a8d4" POINT-SIZE="18">&#9729;</FONT> {t(net, 13, "#ffffff", True)}'
-                    dot.append("  " + shaped(pid, "ellipse", label(t("PROVIDER NETWORK", 8, "#f9a8d4"), cloud),
+                    dot.append("  " + shaped(provider_id, "ellipse",
+                                             label(t("PROVIDER NETWORK", 8, "#f9a8d4"), cloud),
                                              fill="#2a0f22", border=C_PROVIDER, tooltip=f"physnet {net}",
                                              cls="provider", style="filled,dashed", penwidth=2.0))
                 tag = first(p.get("tag"))
-                net_lines = ["localnet: " + p["name"]]
+                port_id = f"localnet_port_{p['_uuid']}"
+                port_lines = [
+                    t("LOCALNET PORT", 8, "#f9a8d4"),
+                    t(p["name"], 11, "#ffffff", True),
+                ]
                 if tag is not None:
-                    net_lines.append(f"VLAN {tag}")
-                edges.append(f'  {q(sid)} -> {q(pid)} [dir=both, color="{C_PROVIDER}", fontcolor="#f9a8d4", '
-                             f'label={edge_label(net_lines)}];')
+                    port_lines.append(t(f"VLAN {tag}", 9, C_MUTED))
+                dot.append("  " + shaped(
+                    port_id, "box", label(*port_lines), fill="#2a0f22", border=C_PROVIDER,
+                    tooltip=f"{p['name']} | physnet {net}", cls="port localnet-port",
+                    style="rounded,filled", penwidth=1.8, margin="0.16,0.09",
+                ))
+                edges.append(
+                    f'  {q(sid)} -> {q(port_id)} [dir=none, color="{C_PROVIDER}"];'
+                )
+                edges.append(
+                    f'  {q(port_id)} -> {q(provider_id)} '
+                    f'[dir=none, color="{C_PROVIDER}", fontcolor="#f9a8d4", '
+                    f'label={edge_label(["network: " + net])}];'
+                )
                 continue
 
             # VIF / localport / virtual / external ... : rounded pill with a status light
@@ -278,6 +334,53 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
                 chassis_port_count[cu] = chassis_port_count.get(cu, 0) + 1
             edges.append(f'  {q(sid)} -> {q(pid)} [dir=none, color="#334155", penwidth=1.2];')
 
+    # Keep database rows visible even if the parent switch/router reference is
+    # incomplete, so a diagram does not silently hide orphaned logical ports.
+    orphan_switch_ports = [
+        p for p in lsp.values()
+        if p["_uuid"] not in switch_ports_seen
+    ]
+    if orphan_switch_ports:
+        dot.append('  subgraph "cluster_unattached_switch_ports" {')
+        dot.append(f'    label="Logical switch ports not attached to a listed switch"; '
+                   f'style="dashed,rounded"; color="#ef4444"; fontcolor="{C_BAD}";')
+        for p in sorted(orphan_switch_ports, key=lambda row: row.get("name", "")):
+            pid = f"port_{p['_uuid']}"
+            port_lines = [
+                t((p.get("type") or "VIF").upper(), 8, C_MUTED),
+                t(p.get("name", "unnamed port"), 11, "#ffffff", True),
+                t("parent switch reference unresolved", 8, C_BAD),
+            ]
+            if (p.get("type") or "") == "router":
+                port_lines.append(t("peer: " + as_map(p.get("options")).get("router-port", "not configured"), 9, C_MUTED))
+            elif (p.get("type") or "") == "localnet":
+                port_lines.append(t("network: " + as_map(p.get("options")).get("network_name", "not configured"), 9, C_MUTED))
+            dot.append("  " + shaped(
+                pid, "box", label(*port_lines), fill="#111c2e", border=C_BAD,
+                tooltip=f"{p.get('name', 'unnamed port')} | {p['_uuid']}",
+                cls="port unbound", style="rounded,filled", penwidth=2.0,
+            ))
+
+    orphan_router_ports = [
+        lrp for lrp in lrp_by_uuid.values()
+        if lrp["_uuid"] not in router_ports_seen
+    ]
+    if orphan_router_ports:
+        dot.append('  subgraph "cluster_unattached_router_ports" {')
+        dot.append(f'    label="Logical router ports not attached to a listed router"; '
+                   f'style="dashed,rounded"; color="#ef4444"; fontcolor="{C_BAD}";')
+        for lrp in sorted(orphan_router_ports, key=lambda row: row.get("name", "")):
+            pid = f"router_port_{lrp['_uuid']}"
+            port_lines = [
+                t(lrp.get("name", "unnamed router port"), 11, "#ffffff", True),
+                t("parent router reference unresolved", 8, C_BAD),
+            ]
+            dot.append("  " + shaped(
+                pid, "box", label(*port_lines), fill="#1e1b4b", border=C_BAD,
+                tooltip=f"{lrp.get('name', 'unnamed router port')} | {lrp['_uuid']}",
+                cls="port router-port unbound", style="rounded,filled", penwidth=2.0,
+            ))
+
     # ---- Router <-> router peering -----------------------------------------------
     for name, lrp in lrp_by_name.items():
         peer = first(lrp.get("peer"))
@@ -288,7 +391,8 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
             continue
         router_links.add(key)
         lines = [f"{name} <-> {peer}"] + as_list(lrp.get("networks"))
-        edges.append(f'  {q("router_" + lrp_owner[name])} -> {q("router_" + lrp_owner[peer])} '
+        edges.append(f'  {q("router_port_" + lrp["_uuid"])} -> '
+                     f'{q("router_port_" + lrp_by_name[peer]["_uuid"])} '
                      f'[dir=both, color="#a78bfa", fontcolor="#c4b5fd", label={edge_label(lines)}];')
 
     # ---- Chassis clusters: host = "component" shape ------------------------------
@@ -324,6 +428,9 @@ def build_dot(data: dict[str, list[dict]]) -> tuple[str, dict[str, int]]:
     stats = {
         "routers": len(routers), "switches": len(switches), "chassis": len(chassis),
         "provider_networks": len(provider_nets), "ports": n_ports,
+        "logical_switch_ports": len(lsp), "logical_router_ports": len(lrp_by_uuid),
         "ports_up": n_up, "ports_down": n_down, "unbound_ports": len(clusters[None]),
+        "unattached_switch_ports": len(orphan_switch_ports),
+        "unattached_router_ports": len(orphan_router_ports),
     }
     return "\n".join(dot), stats
