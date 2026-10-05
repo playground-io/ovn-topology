@@ -44,7 +44,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/diagram.svg")
     def diagram(request: Request) -> Response:
-        etag = f'"v{state.version}"'
+        etag = f'"{state.instance_id}-v{state.version}"'
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304)
         return Response(state.svg, media_type="image/svg+xml", headers={"ETag": etag, "Cache-Control": "no-cache"})
@@ -59,7 +59,8 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/status")
     def status() -> JSONResponse:
-        return JSONResponse({"version": state.version, "updated": state.updated,
+        return JSONResponse({"instance_id": state.instance_id,
+                             "version": state.version, "updated": state.updated,
                              "error": state.error, "stats": state.stats,
                              "trace_version": state.trace_version, "renderer": cfg.renderer})
 

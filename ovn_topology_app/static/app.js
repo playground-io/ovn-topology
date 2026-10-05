@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
   const KINDS = ['router', 'switch', 'port', 'provider', 'chassis'];
-  let current = -1, pz = null, idx = null;
+  let current = '', currentInstance = null, pz = null, idx = null;
 
   // ---------------- filter state (persisted) ----------------
   function loadF() { try { return JSON.parse(localStorage.getItem('ovn-filter') || '{}'); } catch (e) { return {}; } }
@@ -156,85 +156,50 @@ const $ = id => document.getElementById(id);
   }
   function updateTraceFields() {
     const datapath = traceDatapaths.find(item => item.name === $('trace-datapath').value);
-    if (!datapath) {
-      setSelect('trace-inport', 'No datapath selected', [], '');
-      setSelect('trace-src-mac', 'No MAC addresses available', [], '');
-      setSelect('trace-dst-mac', 'No MAC addresses available', [], '');
-      setSelect('trace-src-ip', 'No IP addresses available', [], '');
-      setSelect('trace-dst-ip', 'No IP addresses available', [], '');
-      $('trace-submit').disabled = true;
-      refreshExtraTraceFields();
-      return;
-    }
-    const portValue = $('trace-inport').value;
-    const srcMacValue = $('trace-src-mac').value, dstMacValue = $('trace-dst-mac').value;
-    const srcIpValue = $('trace-src-ip').value, dstIpValue = $('trace-dst-ip').value;
-    setSelect('trace-inport', 'Choose ingress port', datapath.ports.map(port => ({
-      label: port.name, value: port.name
-    })), portValue);
-    const macs = datapath.macs.map(mac => ({ label: mac, value: mac }));
-    setSelect('trace-src-mac', 'Choose source MAC', macs, srcMacValue);
-    setSelect('trace-dst-mac', 'Choose destination MAC', macs, dstMacValue || (macs[1] || {}).value);
-    const ips = datapath.ips.map(ip => ({ label: ip, value: ip }));
-    setSelect('trace-src-ip', 'No IP (L2 trace)', ips, srcIpValue, true);
-    setSelect('trace-dst-ip', 'No IP (L2 trace)', ips, dstIpValue, true);
-    $('trace-submit').disabled = !(datapath.ports.length && macs.length);
-    refreshExtraTraceFields();
+    const inputs = ['trace-inport', 'trace-src-mac', 'trace-dst-mac', 'trace-src-ip', 'trace-dst-ip'];
+    inputs.forEach(id => { $(id).disabled = !datapath; });
+    const setSuggestions = (id, values) => {
+      $(id).replaceChildren(...values.map(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        return option;
+      }));
+    };
+    setSuggestions('trace-inports', datapath ? datapath.ports.map(port => port.name) : []);
+    setSuggestions('trace-macs', datapath ? datapath.macs : []);
+    setSuggestions('trace-ips', datapath ? datapath.ips : []);
+    updateTraceSubmitState();
   }
-  function traceFieldContext() {
-    const fields = [...document.querySelectorAll('.trace-extra-row')];
-    const valuesFor = name => fields
-      .filter(row => row.querySelector('[data-trace-field]').value === name)
-      .map(row => row.querySelector('[data-trace-value]').value.trim().toLowerCase());
-    const selectedIps = [$('trace-src-ip').value, $('trace-dst-ip').value].filter(Boolean);
-    const families = new Set(selectedIps.map(ip => ip.includes(':') ? 6 : 4));
-    const ethTypes = valuesFor('eth.type');
-    if (ethTypes.some(value => ['0x0800', '2048'].includes(value))) families.add(4);
-    if (ethTypes.some(value => ['0x86dd', '34525'].includes(value))) families.add(6);
-    const protocols = new Set(valuesFor('ip.proto').map(value => {
-      const parsed = Number(value);
-      return Number.isInteger(parsed) ? parsed : -1;
-    }));
-    return { fields, families, ethTypes, protocols };
+  function updateTraceSubmitState() {
+    const rawMode = $('trace-raw-toggle').checked;
+    $('trace-submit').disabled = !$('trace-datapath').value || (rawMode
+      ? !$('trace-raw-expression').value.trim()
+      : !($('trace-inport').value && $('trace-src-mac').value && $('trace-dst-mac').value));
   }
-  function availableTraceFields(context, row) {
-    const usedElsewhere = new Set(context.fields
-      .filter(other => other !== row)
-      .map(other => other.querySelector('[data-trace-field]').value)
-      .filter(Boolean));
-    const candidates = [
-      ['eth.type', true],
-      ['vlan.tci', true],
-      ['ip4.src', context.families.has(4)],
-      ['ip4.dst', context.families.has(4)],
-      ['ip6.src', context.families.has(6)],
-      ['ip6.dst', context.families.has(6)],
-      ['ip.ttl', context.families.size > 0],
-      ['ip.proto', context.families.size > 0],
-      ['tcp.src', context.protocols.has(6)],
-      ['tcp.dst', context.protocols.has(6)],
-      ['udp.src', context.protocols.has(17)],
-      ['udp.dst', context.protocols.has(17)],
-      ['icmp4.type', context.families.has(4) && context.protocols.has(1)],
-      ['icmp4.code', context.families.has(4) && context.protocols.has(1)],
-      ['icmp6.type', context.families.has(6) && context.protocols.has(58)],
-      ['icmp6.code', context.families.has(6) && context.protocols.has(58)],
-      ['arp.op', context.ethTypes.some(value => ['0x0806', '2054'].includes(value))]
-    ];
-    return candidates.filter(([name, enabled]) => enabled && (!usedElsewhere.has(name) || row.querySelector('[data-trace-field]').value === name))
-      .map(([name]) => name);
-  }
+  const commonTraceFields = [
+    'eth.type', 'eth.src', 'eth.dst', 'vlan.tci',
+    'ip4.src', 'ip4.dst', 'ip6.src', 'ip6.dst',
+    'ip.proto', 'ip.ttl', 'ip.frag', 'ip.dscp', 'ip.ecn',
+    'tcp.src', 'tcp.dst', 'tcp.flags',
+    'udp.src', 'udp.dst',
+    'icmp4.type', 'icmp4.code',
+    'icmp6.type', 'icmp6.code',
+    'arp.op', 'arp.spa', 'arp.tpa', 'arp.sha', 'arp.tha',
+    'nd.target', 'nd.sll', 'nd.tll',
+    'ct_mark', 'ct_label',
+    'inport', 'outport'
+  ];
   function updateExtraFieldSuggestions(row) {
     const datapath = traceDatapaths.find(item => item.name === $('trace-datapath').value);
     const field = row.querySelector('[data-trace-field]').value.trim();
     const values = !datapath ? [] :
-      field === 'inport' ? datapath.ports.map(port => port.name) :
+      field === 'inport' || field === 'outport' ? datapath.ports.map(port => port.name) :
       field === 'eth.src' || field === 'eth.dst' ? datapath.macs :
       field === 'ip4.src' || field === 'ip4.dst' ? datapath.ips.filter(ip => !ip.includes(':')) :
       field === 'ip6.src' || field === 'ip6.dst' ? datapath.ips.filter(ip => ip.includes(':')) :
       [];
-    const datalist = row.querySelector('datalist');
-    datalist.replaceChildren(...values.map(value => {
+    const valueList = row.querySelector('[data-trace-values]');
+    valueList.replaceChildren(...values.map(value => {
       const option = document.createElement('option');
       option.value = value;
       return option;
@@ -250,7 +215,10 @@ const $ = id => document.getElementById(id);
       'udp.src': '53', 'udp.dst': '53',
       'icmp4.type': '8', 'icmp4.code': '0',
       'icmp6.type': '128', 'icmp6.code': '0',
-      'arp.op': '1'
+      'arp.op': '1', 'arp.spa': '192.0.2.1', 'arp.tpa': '192.0.2.2',
+      'nd.target': '2001:db8::2',
+      'ct.est': '1', 'ct.rel': '1', 'ct.new': '1', 'ct.inv': '1',
+      'ct_mark': '0', 'ct_label': '0'
     };
     const commonValues = {
       'eth.type': ['0x0800', '0x86dd', '0x0806'],
@@ -270,62 +238,41 @@ const $ = id => document.getElementById(id);
       ? 'Choose or enter value'
       : (examples[field] ? 'e.g. ' + examples[field] : 'Enter OVN value');
   }
-  function refreshExtraTraceFields() {
-    let context = traceFieldContext();
-    context.fields.forEach(row => {
-      const select = row.querySelector('[data-trace-field]');
-      const previous = select.value;
-      const allowed = availableTraceFields(context, row);
-      select.replaceChildren(new Option('Choose a compatible field', ''));
-      allowed.forEach(name => select.add(new Option(name, name)));
-      if (allowed.includes(previous)) select.value = previous;
-      else {
-        select.value = '';
-        row.querySelector('[data-trace-value]').value = '';
-      }
-    });
-    context = traceFieldContext();
-    context.fields.forEach(row => {
-      const previous = row.querySelector('[data-trace-field]').value;
-      const allowed = availableTraceFields(context, row);
-      if (previous && !allowed.includes(previous)) {
-        row.querySelector('[data-trace-field]').value = '';
-        row.querySelector('[data-trace-value]').value = '';
-      }
-      updateExtraFieldSuggestions(row);
-    });
-  }
   function addExtraTraceField() {
     const rows = document.querySelectorAll('.trace-extra-row');
-    if (rows.length >= 12) {
-      $('trace-status').className = 'err';
-      $('trace-status').textContent = 'A maximum of 12 extra trace fields is supported.';
-      return;
-    }
     const row = document.createElement('div');
     const listId = 'trace-extra-values-' + Date.now() + '-' + rows.length;
+    const fieldListId = 'trace-field-options-' + Date.now() + '-' + rows.length;
     row.className = 'trace-extra-row';
     row.innerHTML =
-      '<label>Field <select data-trace-field required><option value="">Choose a compatible field</option></select></label>' +
-      '<label>Operator <select data-trace-operator><option>==</option><option>!=</option><option>&lt;=</option><option>&gt;=</option><option>&lt;</option><option>&gt;</option></select></label>' +
+      '<label>OVN field <input data-trace-field list="' + fieldListId + '" required placeholder="e.g. tcp.dst or arp.op"></label>' +
+      '<datalist id="' + fieldListId + '" data-trace-fields></datalist>' +
+      '<label>Operator <select data-trace-operator><option>==</option><option>!=</option><option>&lt;=</option><option>&gt;=</option><option>&lt;</option><option>&gt;</option><option>in</option><option>not in</option></select></label>' +
       '<label>Value <input data-trace-value list="' + listId + '" required placeholder="Enter OVN value"></label>' +
-      '<datalist id="' + listId + '"></datalist>' +
+      '<datalist id="' + listId + '" data-trace-values></datalist>' +
       '<button type="button" data-remove-trace-field aria-label="Remove trace field">Remove</button>';
     const field = row.querySelector('[data-trace-field]');
-    field.addEventListener('change', () => {
-      row.querySelector('[data-trace-value]').value = '';
-      refreshExtraTraceFields();
-    });
-    row.querySelector('[data-trace-value]').addEventListener('input', refreshExtraTraceFields);
-    row.querySelector('[data-trace-value]').addEventListener('change', refreshExtraTraceFields);
+    row.querySelector('[data-trace-fields]').replaceChildren(...commonTraceFields.map(name => {
+      const option = document.createElement('option');
+      option.value = name;
+      return option;
+    }));
+    field.addEventListener('input', () => updateExtraFieldSuggestions(row));
+    field.addEventListener('change', () => updateExtraFieldSuggestions(row));
     row.querySelector('[data-remove-trace-field]').addEventListener('click', () => {
       row.remove();
-      refreshExtraTraceFields();
     });
     $('trace-extra-fields').append(row);
-    refreshExtraTraceFields();
     field.focus();
   }
+  $('trace-raw-toggle').addEventListener('change', event => {
+    $('trace-raw-label').hidden = !event.target.checked;
+    ['trace-inport', 'trace-src-mac', 'trace-dst-mac'].forEach(id => {
+      $(id).required = !event.target.checked;
+    });
+    updateTraceSubmitState();
+  });
+  $('trace-raw-expression').addEventListener('input', updateTraceSubmitState);
   $('trace-add-field').addEventListener('click', addExtraTraceField);
   async function loadTraceOptions() {
     try {
@@ -347,13 +294,10 @@ const $ = id => document.getElementById(id);
     }
   }
   $('trace-datapath').addEventListener('change', updateTraceFields);
-  ['trace-src-ip', 'trace-dst-ip'].forEach(id => $(id).addEventListener('change', refreshExtraTraceFields));
   ['trace-inport', 'trace-src-mac', 'trace-dst-mac', 'trace-src-ip', 'trace-dst-ip']
-    .forEach(id => $(id).addEventListener('change', () => {
-      $('trace-submit').disabled = !(
-        $('trace-inport').value && $('trace-src-mac').value && $('trace-dst-mac').value
-      );
-    }));
+    .forEach(id => ['change', 'input'].forEach(event => $(id).addEventListener(event, () => {
+      updateTraceSubmitState();
+    })));
 
   function parseTraceStages(output) {
     const stages = [], stack = [];
@@ -535,30 +479,42 @@ const $ = id => document.getElementById(id);
     const inport = $('trace-inport').value;
     const srcMac = $('trace-src-mac').value, dstMac = $('trace-dst-mac').value;
     const srcIp = $('trace-src-ip').value, dstIp = $('trace-dst-ip').value;
-    if (srcIp && dstIp && srcIp.includes(':') !== dstIp.includes(':')) {
+    const rawMode = $('trace-raw-toggle').checked;
+    const rawExpression = $('trace-raw-expression').value.trim();
+    if (rawMode && !rawExpression) {
+      status.className = 'err';
+      status.textContent = 'Enter a full OVN microflow.';
+      return;
+    }
+    if (!rawMode && srcIp && dstIp && srcIp.includes(':') !== dstIp.includes(':')) {
       status.className = 'err';
       status.textContent = 'Source and destination IPs must use the same address family.';
       return;
     }
     const quoteFlowString = value => '"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-    const flow = [
-      'inport == ' + quoteFlowString(inport),
-      'eth.src == ' + srcMac,
-      'eth.dst == ' + dstMac
-    ];
-    if (srcIp) flow.push((srcIp.includes(':') ? 'ip6.src' : 'ip4.src') + ' == ' + srcIp);
-    if (dstIp) flow.push((dstIp.includes(':') ? 'ip6.dst' : 'ip4.dst') + ' == ' + dstIp);
-    for (const row of document.querySelectorAll('.trace-extra-row')) {
-      const field = row.querySelector('[data-trace-field]').value.trim();
-      const operator = row.querySelector('[data-trace-operator]').value;
-      const value = row.querySelector('[data-trace-value]').value.trim();
-      if (!field || !value) {
-        status.className = 'err';
-        status.textContent = 'Each added trace field needs both a field name and value.';
-        return;
+    let flow;
+    if (rawMode) {
+      flow = [rawExpression];
+    } else {
+      flow = [
+        'inport == ' + quoteFlowString(inport),
+        'eth.src == ' + srcMac,
+        'eth.dst == ' + dstMac
+      ];
+      if (srcIp) flow.push((srcIp.includes(':') ? 'ip6.src' : 'ip4.src') + ' == ' + srcIp);
+      if (dstIp) flow.push((dstIp.includes(':') ? 'ip6.dst' : 'ip4.dst') + ' == ' + dstIp);
+      for (const row of document.querySelectorAll('.trace-extra-row')) {
+        const field = row.querySelector('[data-trace-field]').value.trim();
+        const operator = row.querySelector('[data-trace-operator]').value;
+        const value = row.querySelector('[data-trace-value]').value.trim();
+        if (!field || !value) {
+          status.className = 'err';
+          status.textContent = 'Each added trace condition needs both a field name and value.';
+          return;
+        }
+        const flowValue = field === 'inport' || field === 'outport' ? quoteFlowString(value) : value;
+        flow.push(field + ' ' + operator + ' ' + flowValue);
       }
-      const flowValue = field === 'inport' ? quoteFlowString(value) : value;
-      flow.push(field + ' ' + operator + ' ' + flowValue);
     }
     button.disabled = true;
     status.className = '';
@@ -572,7 +528,7 @@ const $ = id => document.getElementById(id);
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           datapath,
-          microflow: flow.join(' && ')
+          microflow: flow.join(rawMode ? '' : ' && ')
         })
       });
       const result = await response.json();
@@ -620,15 +576,15 @@ const $ = id => document.getElementById(id);
   let lastStats = {};
 
   // ---------------- live updates ----------------
-  async function loadSvg(version) {
-    const prev = pz ? { zoom: pz.getZoom(), pan: pz.getPan() } : null;
+  async function loadSvg(version, cacheKey, preserveViewport) {
+    const prev = preserveViewport && pz ? { zoom: pz.getZoom(), pan: pz.getPan() } : null;
     try { if (pz) pz.destroy(); } catch (e) {}
     pz = null; clientErr = '';
     let svg;
     if (window.OVN_RENDERER === 'mermaid') {
       try {
         if (!window.mermaid) throw new Error('Mermaid library not loaded (CDN blocked?)');
-        const response = await fetch('/diagram.mmd?v=' + version);
+        const response = await fetch('/diagram.mmd?v=' + encodeURIComponent(cacheKey));
         if (!response.ok) throw new Error('Could not fetch Mermaid diagram: HTTP ' + response.status);
         window.mermaid.initialize({
           startOnLoad: false,
@@ -646,7 +602,9 @@ const $ = id => document.getElementById(id);
         return;
       }
     } else {
-      svg = await (await fetch('/diagram.svg?v=' + version)).text();
+      const response = await fetch('/diagram.svg?v=' + encodeURIComponent(cacheKey), { cache: 'no-store' });
+      if (!response.ok) throw new Error('Could not fetch Graphviz diagram: HTTP ' + response.status);
+      svg = await response.text();
     }
     $('diagram').innerHTML = svg;
     const el = $('diagram').querySelector('svg');
@@ -671,7 +629,16 @@ const $ = id => document.getElementById(id);
       const msg = s.error ? 'OVN query failed (showing last good diagram): ' + s.error : clientErr;
       banner.style.display = msg ? 'block' : 'none';
       banner.textContent = msg;
-      if (s.version > 0 && s.version !== current) { current = s.version; await loadSvg(s.version); }
+      if (s.version > 0) {
+        const instanceId = s.instance_id || '';
+        const revision = instanceId + ':' + s.version;
+        if (revision !== current) {
+          const restarted = currentInstance !== null && instanceId !== currentInstance;
+          current = revision;
+          currentInstance = instanceId;
+          await loadSvg(s.version, revision, !restarted);
+        }
+      }
       const st = $('status');
       st.className = 'status' + (s.error ? ' err' : '');
       st.textContent = s.version > 0 ? 'v' + s.version + ' · changed ' + new Date(s.updated * 1000).toLocaleTimeString()

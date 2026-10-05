@@ -35,7 +35,7 @@
 </div>
 <details id="trace-panel">
   <summary>Run OVN trace</summary>
-  <small>Required: ingress port and source/destination MACs. IP addresses and extra fields are optional. Field choices depend on selected IP version and protocol: choose an IP address or eth.type before IP fields, then choose ip.proto before TCP, UDP, or ICMP fields. Values are suggested from this datapath where OVN data provides them; you can also type values.</small>
+  <small>Select a datapath, then build a microflow with suggested or custom packet values. Extra fields accept any OVN match field; suggestions do not restrict what you can enter. For complete control (including omitting, repeating, or combining packet fields with OR), use a full raw OVN microflow.</small>
   <form id="trace-form">
     <label>Logical switch or router
       <select name="datapath" id="trace-datapath" required disabled>
@@ -43,32 +43,31 @@
       </select>
     </label>
     <label>Ingress port
-      <select name="inport" id="trace-inport" required disabled>
-        <option value="">Select a datapath first</option>
-      </select>
+      <input name="inport" id="trace-inport" list="trace-inports" required disabled placeholder="Choose or type logical port">
+      <datalist id="trace-inports"></datalist>
     </label>
     <label>Source MAC
-      <select name="eth_src" id="trace-src-mac" required disabled>
-        <option value="">Select a datapath first</option>
-      </select>
+      <input name="eth_src" id="trace-src-mac" list="trace-macs" required disabled placeholder="Choose or type MAC">
     </label>
     <label>Destination MAC
-      <select name="eth_dst" id="trace-dst-mac" required disabled>
-        <option value="">Select a datapath first</option>
-      </select>
+      <input name="eth_dst" id="trace-dst-mac" list="trace-macs" required disabled placeholder="Choose or type MAC">
     </label>
     <label>Source IP (optional)
-      <select name="ip_src" id="trace-src-ip" disabled>
-        <option value="">No IP (L2 trace)</option>
-      </select>
+      <input name="ip_src" id="trace-src-ip" list="trace-ips" disabled placeholder="No IP (L2 trace)">
     </label>
     <label>Destination IP (optional)
-      <select name="ip_dst" id="trace-dst-ip" disabled>
-        <option value="">No IP (L2 trace)</option>
-      </select>
+      <input name="ip_dst" id="trace-dst-ip" list="trace-ips" disabled placeholder="No IP (L2 trace)">
     </label>
+    <datalist id="trace-macs"></datalist>
+    <datalist id="trace-ips"></datalist>
     <div id="trace-extra-fields" aria-live="polite"></div>
-    <button id="trace-add-field" type="button">Add trace field</button>
+    <div class="trace-extra-actions">
+      <button id="trace-add-field" type="button">Add condition</button>
+      <label class="trace-raw-toggle"><input id="trace-raw-toggle" type="checkbox"> Use full raw OVN microflow</label>
+    </div>
+    <label id="trace-raw-label" hidden>Full OVN microflow (replaces the fields above)
+      <textarea id="trace-raw-expression" rows="2" placeholder='e.g. inport == "port-vm-a" && (ip4 && tcp.dst == 443 || ip6 && udp.dst == 443)' spellcheck="false"></textarea>
+    </label>
     <button id="trace-submit" type="submit" disabled>Trace</button>
     <span id="trace-status" role="status" aria-live="polite"></span>
   </form>

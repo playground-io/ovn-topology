@@ -1,6 +1,7 @@
 import unittest
 
 from ovn_topology_app.mermaid import build_mermaid
+from ovn_topology_app.config import State
 from ovn_topology_app.ovsdb import decode
 from ovn_topology_app.topology import build_dot
 
@@ -27,6 +28,9 @@ class TopologyTests(unittest.TestCase):
             decode(["map", [["key", ["set", ["value"]]]]]),
             {"key": ["value"]},
         )
+
+    def test_new_runtime_state_gets_unique_instance_id(self):
+        self.assertNotEqual(State().instance_id, State().instance_id)
 
     def test_build_dot_includes_switch_and_port_stats(self):
         dot, stats = build_dot(self.data)

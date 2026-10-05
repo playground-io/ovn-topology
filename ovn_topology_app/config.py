@@ -1,6 +1,7 @@
 """Application configuration and shared runtime state."""
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 
 @dataclass
@@ -17,6 +18,7 @@ class Config:
 
 @dataclass
 class State:
+    instance_id: str = field(default_factory=lambda: uuid4().hex)
     svg: str = ("<svg xmlns='http://www.w3.org/2000/svg' width='400' height='60'>"
                 "<text x='10' y='30' fill='#94a3b8'>Waiting for first topology...</text></svg>")
     dot: str = ""
