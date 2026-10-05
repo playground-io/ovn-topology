@@ -28,6 +28,10 @@ does not create a virtual machine, configure its operating system, or plug an
 interface into OVS. A guest needs a real virtual NIC attached to the correct
 OVS integration bridge, and that interface must identify its OVN port. The
 examples using `ovn-trace` model packets and do not send traffic onto a wire.
+Where the instructor permits host networking changes, this workbook also uses
+Linux network namespaces as lightweight stand-ins for guests. A veth pair
+connects each namespace to the chassis OVS integration bridge, allowing real
+packets (including `ping`) to be tested without booting VMs.
 
 ### Where commands run
 
@@ -39,7 +43,16 @@ There are two command contexts in a real deployment:
 2. **OVS chassis:** Run `ovs-vsctl`, `ovs-ofctl`, and `ovs-appctl` on a host
    that runs Open vSwitch. These commands inspect or configure the local
    switch. Commands that change a bridge or physical interface can interrupt
-   connectivity; in this workbook, OVS inspection commands are read-only.
+   connectivity. Apart from the explicitly optional namespace exercise, the
+   OVS commands in this workbook are read-only; only run that exercise on an
+   instructor-approved disposable chassis.
+3. **Namespace guest tests (optional):** Run the `ip netns`, `ip link`, and
+   `ip netns exec` commands on an OVN chassis with `br-int`, as root or with
+   equivalent network-administration privileges. These commands create
+   temporary host interfaces and namespaces, so use only the instructor's
+   disposable lab host. The database client and the chassis may be different
+   machines; a namespace created on the database client is not attached to
+   the chassis.
 
 The prompt in your classroom lab may put these tools in a container or provide
 wrappers. Follow the instructor's connection instructions. If your database
@@ -187,14 +200,72 @@ database rows. Find the row named `sw-tenant1`, then find both port rows.
 *Student Check:* Do both ports belong to `sw-tenant1`? Do their configured
 addresses match the table at the start of the workbook?
 
-**Step 5. Read the result**
+**Step 5. Attach two temporary namespace guests on a chassis (optional real-packet test)**
+
+Run this step on the chassis that has OVS and `br-int`, not merely on the
+machine where you ran `ovn-nbctl`. It creates a namespace named `ns-vm-a` and
+one named `ns-vm-b`; each gets a veth cable whose host end is plugged into
+`br-int`. The OVS `iface-id` value connects that host interface to the
+corresponding OVN logical port. All interface and namespace names below are
+reserved for this workbook; confirm they are unused first. Do not run these
+commands on a shared or production chassis.
+
+Run as root (or prefix the host commands with `sudo`):
+
+```bash
+ip netns add ns-vm-a
+ip link add vm-a-host type veth peer name vm-a-peer
+ip link set vm-a-peer netns ns-vm-a
+ip link set vm-a-host up
+ip netns exec ns-vm-a ip link set lo up
+ip netns exec ns-vm-a ip link set vm-a-peer name eth0
+ip netns exec ns-vm-a ip link set eth0 address 50:54:00:00:00:0A
+ip netns exec ns-vm-a ip address add 10.0.1.10/24 dev eth0
+ip netns exec ns-vm-a ip link set eth0 up
+ovs-vsctl add-port br-int vm-a-host
+ovs-vsctl set Interface vm-a-host external_ids:iface-id=port-vm-a
+
+ip netns add ns-vm-b
+ip link add vm-b-host type veth peer name vm-b-peer
+ip link set vm-b-peer netns ns-vm-b
+ip link set vm-b-host up
+ip netns exec ns-vm-b ip link set lo up
+ip netns exec ns-vm-b ip link set vm-b-peer name eth0
+ip netns exec ns-vm-b ip link set eth0 address 50:54:00:00:00:0B
+ip netns exec ns-vm-b ip address add 10.0.1.20/24 dev eth0
+ip netns exec ns-vm-b ip link set eth0 up
+ovs-vsctl add-port br-int vm-b-host
+ovs-vsctl set Interface vm-b-host external_ids:iface-id=port-vm-b
+```
+
+The namespace `eth0` MAC/IP addresses must match the addresses assigned to
+the corresponding OVN ports. The namespace has no default route yet; none is
+needed for these two same-subnet guests.
+
+**Step 6. Send a real ping and check the attachment**
+
+```bash
+ip netns exec ns-vm-a ping -c 3 10.0.1.20
+ovs-vsctl --columns=name,external_ids list Interface
+ovn-sbctl --columns=logical_port,chassis,type list Port_Binding
+```
+
+The ping is real traffic from one Linux network stack to another. It should
+receive replies if OVN has bound both interfaces and the chassis is healthy.
+The OVS output should show `iface-id=port-vm-a` and `iface-id=port-vm-b`;
+the SB output should show the logical ports bound to the chassis. If ping
+fails, check those bindings, `ip netns exec ns-vm-a ip address`, and the OVS
+interface state before moving on. A successful ping on one chassis does not
+test traffic crossing between chassis.
+
+**Step 7. Read the result**
 
 The switch is a logical object in the NB database. OVN has not created two
-guest operating systems. In a real deployment, a VM manager must create each
-VM and attach its NIC to a host's OVS integration bridge. The attached
-interface must carry the OVN logical-port identity, commonly as the OVS
-Interface external ID `iface-id=port-vm-a`. That step is deliberately not
-performed in this logical-only exercise.
+guest operating systems. In a real deployment, a VM manager normally creates
+each VM and attaches its NIC to a host's OVS integration bridge. Here, the
+namespaces and veth pairs provide temporary stand-ins for those VMs and the
+OVS Interface external IDs `iface-id=port-vm-a` and `iface-id=port-vm-b`
+provide their logical-port identities.
 
 *Think about it:* If `ovn-nbctl show` lists the port but there is no matching
 interface on any host, what do you expect to find in the SB Port_Binding
@@ -216,8 +287,24 @@ ovn-nbctl lsp-set-port-security port-vm-a "50:54:00:00:00:0A 10.0.1.10"
 ovn-nbctl lsp-set-port-security port-vm-b "50:54:00:00:00:0B 10.0.1.20"
 ```
 
-**Step 2. Test the Network (Simulation)**
-Since we don't have real VMs running, we use `ovn-trace` to inject a fake packet into the logical network. We are going to simulate a ping (ICMP) from VM-A to VM-B.
+**Step 2. Test the Network with a Real Ping (if you created the namespaces)**
+
+The namespaces from Module 1 can send a real ICMP echo request through OVS:
+
+```bash
+ip netns exec ns-vm-a ping -c 3 10.0.1.20
+```
+
+Because port security now permits VM-A's configured MAC/IP pair, the ping
+should still succeed. This verifies an actual packet path for these two
+namespace guests on this chassis; it does not prove that guests on other
+chassis, the physical uplink, or applications are working.
+
+**Step 3. Test the Network (Simulation)**
+
+If you did not create namespaces, or to inspect OVN's logical decision, use
+`ovn-trace`. It models a ping (ICMP) from VM-A to VM-B; it does not send a
+packet:
 
 ```bash
 ovn-trace --summary sw-tenant1 'inport == "port-vm-a" && eth.src == 50:54:00:00:00:0A && eth.dst == 50:54:00:00:00:0B && ip4.src == 10.0.1.10 && ip4.dst == 10.0.1.20'
@@ -226,10 +313,10 @@ ovn-trace --summary sw-tenant1 'inport == "port-vm-a" && eth.src == 50:54:00:00:
 matches the source port's permitted addresses and reaches its destination, the
 summary should show output toward `port-vm-b`.
 
-This is a logical simulation. There does not need to be a running VM, but the
-trace also does not demonstrate that a real VM is plugged into OVS.
+There does not need to be a running VM for a trace, but the trace does not
+demonstrate that a real guest is plugged into OVS.
 
-**Step 3. Test the Security (The Hacker Simulation)**
+**Step 4. Test the Security (Simulation and optional real-packet check)**
 Now, simulate VM-A trying to spoof its source IP address as `10.0.1.99`. Modify `ip4.src` in the trace:
 ```bash
 ovn-trace --summary sw-tenant1 'inport == "port-vm-a" && eth.src == 50:54:00:00:00:0A && eth.dst == 50:54:00:00:00:0B && ip4.src == 10.0.1.99 && ip4.dst == 10.0.1.20'
@@ -237,6 +324,21 @@ ovn-trace --summary sw-tenant1 'inport == "port-vm-a" && eth.src == 50:54:00:00:
 *Student Check:* Find the drop in the trace. OVN releases differ in how they
 format summaries, so do not rely on an empty output. The key result is that the
 packet does **not** reach `port-vm-b`.
+
+If the namespaces are available, also try sending a real packet with that
+unapproved source address. Add and remove the temporary address in the same
+namespace; do not change the OVN port configuration:
+
+```bash
+ip netns exec ns-vm-a ip address add 10.0.1.99/24 dev eth0
+ip netns exec ns-vm-a ping -I 10.0.1.99 -c 2 10.0.1.20
+ip netns exec ns-vm-a ip address del 10.0.1.99/24 dev eth0
+```
+
+The ping should fail while port security rejects the spoofed source. Confirm
+that the address was removed with `ip netns exec ns-vm-a ip address`. A
+failed ping by itself can have other causes; compare it with the `ovn-trace`
+result and the successful allowed-source ping from Step 2.
 
 Port security is an ingress check: OVN checks whether the Ethernet/IP source
 fields are permitted on the port where the packet entered. It is distinct
@@ -296,7 +398,50 @@ ovn-nbctl lsp-set-addresses sw2-to-rtr router
 ovn-nbctl lsp-set-options sw2-to-rtr router-port=rtr-to-sw2
 ```
 
-**Step 5. Trace the Route**
+**Step 5. Attach VM-C as a namespace guest (optional real-packet test)**
+
+If you created `ns-vm-a` and `ns-vm-b` in Module 1, create a matching
+namespace for VM-C on the same chassis. The host end of the veth pair is
+plugged into `br-int` and identified as `port-vm-c`:
+
+```bash
+ip netns add ns-vm-c
+ip link add vm-c-host type veth peer name vm-c-peer
+ip link set vm-c-peer netns ns-vm-c
+ip link set vm-c-host up
+ip netns exec ns-vm-c ip link set lo up
+ip netns exec ns-vm-c ip link set vm-c-peer name eth0
+ip netns exec ns-vm-c ip link set eth0 address 50:54:00:00:00:0C
+ip netns exec ns-vm-c ip address add 10.0.2.10/24 dev eth0
+ip netns exec ns-vm-c ip link set eth0 up
+ovs-vsctl add-port br-int vm-c-host
+ovs-vsctl set Interface vm-c-host external_ids:iface-id=port-vm-c
+```
+
+Set each namespace's default gateway. This is guest operating-system
+configuration: OVN's logical router does not automatically configure a
+namespace's IP routes.
+
+```bash
+ip netns exec ns-vm-a ip route replace default via 10.0.1.1
+ip netns exec ns-vm-c ip route replace default via 10.0.2.1
+```
+
+**Step 6. Ping VM-C across the logical router**
+
+```bash
+ip netns exec ns-vm-a ping -c 3 10.0.2.10
+```
+
+This sends real ICMP packets through the two logical switches and the
+logical router, rather than simulating them. A reply demonstrates that both
+namespace interfaces are attached and that the forward and return paths work
+for this test on this chassis. Check each namespace's routes with
+`ip netns exec ns-vm-a ip route` and `ip netns exec ns-vm-c ip route` if it
+fails. Keeping both namespaces on one chassis does not test tunnel transport
+or cross-chassis forwarding.
+
+**Step 7. Trace the Route**
 Let's send a packet from VM-A (`10.0.1.10`) to VM-C (`10.0.2.10`). Because it's a different subnet, VM-A will address the Ethernet frame to its default gateway's MAC address (`00:00:00:00:01:FF`).
 
 ```bash
@@ -362,8 +507,24 @@ higher numeric priority is evaluated ahead of a lower one.
 ovn-nbctl acl-add sw-tenant2 to-lport 1000 'outport == "port-vm-c"' drop
 ```
 
-**Step 5. Test the Firewall**
-Let's try to SSH (TCP port 22) from VM-A to VM-C.
+**Step 5. Check the allowed real ping (if the namespaces are available)**
+
+The policy explicitly allows ICMP to VM-C. Confirm that a real ping from
+VM-A still receives replies:
+
+```bash
+ip netns exec ns-vm-a ping -c 3 10.0.2.10
+```
+
+This test uses ICMP only. It does not verify that a web server is listening
+on TCP port 80. To check an application port with real traffic, the
+instructor must start a test service in VM-C's namespace and provide an
+appropriate client command; a successful `ovn-trace` for TCP/80 proves only
+the logical ACL decision.
+
+**Step 6. Test the Firewall with `ovn-trace`**
+
+Let's trace an attempt to use SSH (TCP port 22) from VM-A to VM-C.
 ```bash
 ovn-trace --minimal sw-tenant1 'inport == "port-vm-a" && eth.src == 50:54:00:00:00:0A && eth.dst == 00:00:00:00:01:FF && ip4.src == 10.0.1.10 && ip4.dst == 10.0.2.10 && tcp.dst == 22 && ip.ttl == 64'
 ```
@@ -374,7 +535,7 @@ packet was delivered.
 Now change `tcp.dst == 22` to `tcp.dst == 80` and run the command again.
 The TCP/80 rule should allow the packet to reach `port-vm-c`.
 
-**Step 6. Test priority and scope**
+**Step 7. Test priority and scope**
 
 Display the configured ACLs:
 
@@ -458,6 +619,23 @@ configuration. It does **not** prove that the physical bridge mapping,
 external VLAN, upstream route, return route, or firewall is working. In
 addition, the example SNAT rule covers only `10.0.1.0/24`; traffic from
 `10.0.2.0/24` needs its own NAT configuration if that subnet must use SNAT.
+
+**Step 6. Try a real ping to the upstream router (optional)**
+
+If `ns-vm-a` exists and the instructor confirms that the lab's external
+network is connected, send a real ping to its example upstream router:
+
+```bash
+ip netns exec ns-vm-a ping -c 3 172.16.1.254
+```
+
+Use only the external address supplied by the instructor; `172.16.1.254` is
+the workbook example and may not exist in your lab. A reply exercises the
+namespace, OVS/OVN forwarding, route, SNAT, localnet mapping, and upstream
+network together. No reply is not by itself proof that OVN is broken: the
+upstream may block ICMP or use a different address. Compare with the
+successful VM-A-to-VM-C ping and inspect the chassis mapping and upstream
+return route before drawing a conclusion.
 
 **Checkpoint:** Draw the packet's path in two colors: one for the logical
 objects OVN knows about and one for the physical components an operator must
@@ -1418,6 +1596,23 @@ Then answer:
 Only clean up objects you created in the disposable classroom database.
 Before deleting anything, inspect the current state and confirm that the
 names are not used by another student or service.
+
+If you created the namespace guests, first remove only the OVS ports and
+namespaces created by this workbook. Run these commands on the same chassis
+where you created them:
+
+```bash
+ovs-vsctl --if-exists del-port br-int vm-a-host
+ovs-vsctl --if-exists del-port br-int vm-b-host
+ovs-vsctl --if-exists del-port br-int vm-c-host
+ip netns del ns-vm-a
+ip netns del ns-vm-b
+ip netns del ns-vm-c
+```
+
+If you did not create one of these namespace guests, omit its cleanup
+commands. These commands are limited to the names used in the exercises;
+do not delete unrelated OVS ports or network namespaces.
 
 The following commands remove the example routers and switches used in this
 workbook. Deleting a router or switch removes the logical object and can
