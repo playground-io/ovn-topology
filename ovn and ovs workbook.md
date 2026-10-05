@@ -779,6 +779,187 @@ ovn-trace --summary sw-tenant1 'inport == "port-vm-a" && eth.src == 50:54:00:00:
 
 Predict the outcome before running it. Compare the router stage with trace B.
 
+### How to read the trace output
+
+Even with `--summary`, `ovn-trace` displays OVN's logical actions, including
+internal registers and pipeline steps. In other words, **summary is shorter
+than detailed output, but it is not a plain-English summary**. For a shorter
+view focused on packet changes and delivery to logical ports, try `--minimal`:
+
+```bash
+ovn-trace --minimal sw-tenant1 'inport == "port-vm-a" && eth.src == 50:54:00:00:00:0A && eth.dst == 00:00:00:00:01:FF && ip4.src == 10.0.1.10 && ip4.dst == 10.0.2.10 && ip.ttl == 64'
+```
+
+Minimal output omits internal registers and patch-port transitions. This makes
+it easier to see what happens to the packet, but it also hides some of the
+intermediate logical pipeline. Use `--summary` when you need the switch/router
+stages, and the default detailed output when you need to find the specific
+logical flows and tables responsible for a decision. Exact output varies by
+OVN version.
+
+#### Read the packet header first
+
+A trace begins with a line similar to:
+
+```text
+# ip,reg14=0x1,vlan_tci=0x0000,dl_src=50:54:00:00:00:0a,dl_dst=00:00:00:00:01:ff,nw_src=10.0.1.10,nw_dst=10.0.2.10,nw_proto=0,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no
+```
+
+This is the packet at the start of the simulation, displayed with
+OpenFlow/OVS-style field names:
+
+| Trace field | Meaning in this example |
+| --- | --- |
+| `dl_src` | Ethernet source MAC, VM-A |
+| `dl_dst` | Ethernet destination MAC, VM-A's gateway |
+| `nw_src` | IPv4 source, `10.0.1.10` |
+| `nw_dst` | IPv4 destination, VM-C at `10.0.2.10` |
+| `nw_ttl` | IPv4 TTL, initially 64 |
+| `nw_proto` | IP protocol number; `0` here because the example did not specify a transport or ICMP protocol |
+| `reg14`, `vlan_tci`, `nw_tos`, `nw_ecn`, `nw_frag` | Other packet metadata or default fields; usually not needed to understand this routing example |
+
+**Important:** This microflow does not say that the packet is a ping. It
+contains IPv4 addresses but no `icmp4.type` or `icmp4.code`. To trace an ICMP
+echo request, include `icmp4` fields, for example
+`icmp4.type == 8 && icmp4.code == 0`. To trace TCP or UDP, specify the
+protocol and the relevant source/destination ports.
+
+#### Follow the named pipeline sections
+
+Treat each `ingress(...)` or `egress(...)` section as a stage. The names in
+parentheses identify the logical datapath and its logical ports:
+
+1. **Enter the first logical switch**
+
+   ```text
+   ingress(dp="sw-tenant1", inport="port-vm-a") {
+       reg0[15] = check_in_port_sec();
+       next;
+       outport = "sw1-to-rtr";
+       output;
+   ```
+
+   The simulated packet enters `sw-tenant1` through `port-vm-a`.
+   `check_in_port_sec()` checks the packet against VM-A's configured port
+   security. `reg0[15]` is an internal OVN register used to carry the result;
+   students generally do not need to interpret the register number. `next`
+   means continue to the next step in the logical pipeline. OVN selects
+   `sw1-to-rtr` as the next output.
+
+2. **Leave the switch through its router attachment**
+
+   ```text
+   egress(dp="sw-tenant1", inport="port-vm-a", outport="sw1-to-rtr") {
+       ct_clear;
+       next;
+       reg0[15] = check_out_port_sec();
+       next;
+       output;
+       /* output to "sw1-to-rtr", type "patch" */;
+   ```
+
+   This is the switch's egress processing for the selected port.
+   `check_out_port_sec()` checks the packet against the logical output port's
+   security configuration. A port of type `patch` is an OVN-internal logical
+   connection to the router, not a physical cable or VM interface.
+
+3. **Enter the router and make a Layer 3 forwarding decision**
+
+   ```text
+   ingress(dp="router-tenant", inport="rtr-to-sw1") {
+       ...
+       ip.ttl--;
+       ...
+       reg0 = ip4.dst;
+       reg5 = 10.0.2.1;
+       eth.src = 00:00:00:00:02:ff;
+       outport = "rtr-to-sw2";
+       ...
+       eth.dst = 50:54:00:00:00:0c;
+       ...
+       output;
+   ```
+
+   The packet arrives at `router-tenant` through its `rtr-to-sw1` port.
+   `ip.ttl--` decrements the IPv4 TTL from 64 to 63, as a router does.
+   `reg0 = ip4.dst` copies the destination IP into an internal register for a
+   route lookup. `reg5 = 10.0.2.1` is internal route/pipeline state associated
+   with the selected router interface. You do not need to memorize these
+   register names to follow the path.
+
+   The router selects `rtr-to-sw2`, rewrites the Ethernet source to the MAC
+   of that outgoing router port (`00:00:00:00:02:ff`), and sets the Ethernet
+   destination to VM-C's MAC (`50:54:00:00:00:0c`). The IP destination remains
+   `10.0.2.10`; routing changes the link-layer header, not the destination IP
+   in this example.
+
+4. **Leave the router and cross to the second switch**
+
+   ```text
+   egress(dp="router-tenant", inport="rtr-to-sw1", outport="rtr-to-sw2") {
+       ...
+       output;
+       /* output to "rtr-to-sw2", type "patch" */;
+   ```
+
+   The router sends the packet over the logical router-to-switch connection.
+   Again, `patch` describes a logical OVN connection, not a physical port.
+
+5. **Enter the destination switch and deliver to VM-C**
+
+   ```text
+   ingress(dp="sw-tenant2", inport="sw2-to-rtr") {
+       ...
+       outport = "port-vm-c";
+       output;
+   }
+   egress(dp="sw-tenant2", inport="sw2-to-rtr", outport="port-vm-c") {
+       reg0[15] = check_out_port_sec();
+       next;
+       output;
+       /* output to "port-vm-c", type "" */;
+   ```
+
+   The packet enters `sw-tenant2` from its router attachment, selects
+   `port-vm-c`, passes the output-port security check, and is delivered to the
+   destination logical port. In the trace, `type ""` means this is a regular
+   logical switch port, rather than an OVN router/localnet patch attachment.
+
+#### Plain-English summary of this particular trace
+
+```text
+Packet starts at VM-A:
+  Ethernet: VM-A MAC -> router's sw-tenant1 MAC
+  IPv4:     10.0.1.10 -> 10.0.2.10
+  TTL:      64
+
+sw-tenant1 checks ingress security and sends it to sw1-to-rtr.
+router-tenant receives it, decrements TTL to 63, routes toward 10.0.2.0/24,
+  and rewrites the Ethernet header for the outgoing subnet.
+sw-tenant2 receives it from sw2-to-rtr and sends it to port-vm-c.
+The output-port security check passes and the logical trace delivers the packet.
+```
+
+This demonstrates the simulated logical route. It does not prove that a VM
+is running, that `port-vm-c` is bound to a chassis, or that a real packet
+reached a guest. Check the SB binding, local OVS interface, and guest when
+investigating real traffic.
+
+#### A simple way to ignore register noise
+
+When reading a trace for the first time, look for these items in order:
+
+1. `ingress(dp=..., inport=...)`: where the packet enters.
+2. `outport = ...`: which logical port OVN selected next.
+3. `ip.ttl--` or address rewrites: how a router changed the packet.
+4. `output to ...`: whether it crosses a patch connection or reaches a logical port.
+5. A `drop`, `reject`, or final output action: where it stopped or was delivered.
+
+Treat assignments such as `reg0 = ...`, `reg5 = ...`, `xreg0[...] = ...`,
+`flags.loopback = ...`, and `flags.network_id = ...` as implementation
+bookkeeping unless you are debugging OVN's logical-flow pipeline in detail.
+They are not extra ports or addresses that you need to configure on the VM.
+
 ### A repeatable debugging method
 
 When a trace does not match your expectation:

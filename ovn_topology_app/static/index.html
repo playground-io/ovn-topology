@@ -72,7 +72,11 @@
     <button id="trace-submit" type="submit" disabled>Trace</button>
     <span id="trace-status" role="status" aria-live="polite"></span>
   </form>
-  <pre id="trace-output" aria-label="OVN trace results"></pre>
+  <section id="trace-workflow" aria-live="polite" aria-label="Trace workflow" hidden></section>
+  <details id="trace-raw-details">
+    <summary>Show raw ovn-trace output</summary>
+    <pre id="trace-output" aria-label="Raw OVN trace results"></pre>
+  </details>
 </details>
 <div id="banner"></div>
 <div id="container">

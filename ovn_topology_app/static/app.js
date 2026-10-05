@@ -355,6 +355,179 @@ const $ = id => document.getElementById(id);
       );
     }));
 
+  function parseTraceStages(output) {
+    const stages = [], stack = [];
+    let packetHeader = '';
+    output.split(/\r?\n/).forEach(line => {
+      const text = line.trim();
+      if (!packetHeader && /^#\s/.test(text)) packetHeader = text.slice(1).trim();
+      const header = text.match(/^(ingress|egress)\((.*)\)\s*\{$/);
+      if (header) {
+        const fields = {};
+        for (const match of header[2].matchAll(/(\w+)="([^"]*)"/g)) fields[match[1]] = match[2];
+        const stage = { pipeline: header[1], datapath: fields.dp, ...fields, actions: [] };
+        stages.push(stage);
+        stack.push(stage);
+      } else if (text === '}' || text === '};') {
+        stack.pop();
+      } else if (stack.length && text) {
+        stack[stack.length - 1].actions.push(text);
+      }
+    });
+    return { stages, packetHeader };
+  }
+
+  function traceActionDescriptions(stage, ttl) {
+    const descriptions = [];
+    let currentTtl = ttl;
+    for (const action of stage.actions) {
+      if (/^reg\d+|^xreg\d+|^xxreg\d+|^flags\./.test(action) ||
+          action === 'next;' || action === 'ct_clear;') continue;
+      if (/check_(in|out)_port_sec\(\)/.test(action)) {
+        descriptions.push(action.includes('in_port')
+          ? 'OVN checks the packet against the incoming port’s security settings.'
+          : 'OVN checks the packet against the outgoing port’s security settings.');
+      } else if (action === 'ip.ttl--;') {
+        descriptions.push(currentTtl === null
+          ? 'The router decreases the IPv4 TTL by one.'
+          : `The router decreases the IPv4 TTL from ${currentTtl} to ${Math.max(0, currentTtl - 1)}.`);
+        if (currentTtl !== null) currentTtl = Math.max(0, currentTtl - 1);
+      } else if (/^eth\.src\s*=/.test(action)) {
+        descriptions.push(`Sets the Ethernet source address to ${action.replace(/^eth\.src\s*=\s*/, '').replace(/;$/, '')}.`);
+      } else if (/^eth\.dst\s*=/.test(action)) {
+        descriptions.push(`Sets the Ethernet destination address to ${action.replace(/^eth\.dst\s*=\s*/, '').replace(/;$/, '')}.`);
+      } else if (/^ip[46]?\.dst\s*=/.test(action)) {
+        descriptions.push(`Changes the packet destination IP: ${action.replace(/;$/, '')}.`);
+      } else if (/^ip[46]?\.src\s*=/.test(action)) {
+        descriptions.push(`Changes the packet source IP: ${action.replace(/;$/, '')}.`);
+      } else if (/ct_snat|ct_dnat/.test(action)) {
+        descriptions.push(`Applies connection-tracked address translation: ${action.replace(/;$/, '')}.`);
+      } else if (/^drop(?:;|\s)/.test(action)) {
+        descriptions.push('OVN drops the packet at this stage.');
+      } else if (/^reject(?:;|\s)/.test(action)) {
+        descriptions.push('OVN rejects the packet at this stage.');
+      } else if (/^\/\* output to /.test(action)) {
+        const output = action.match(/output to "([^"]+)", type "([^"]*)"/);
+        if (output && output[2] === 'patch') {
+          descriptions.push(`Continues over the OVN logical patch connection “${output[1]}” to the next logical datapath; this is not a physical cable.`);
+        } else if (output) {
+          descriptions.push(`Delivers the packet to logical port “${output[1]}”.`);
+        } else {
+          descriptions.push(action.replace(/^\/\*|\*\/;?$/g, '').trim());
+        }
+      } else if (action === 'output;') {
+        descriptions.push(stage.outport
+          ? `Sends the packet to the selected logical port “${stage.outport}”.`
+          : 'Outputs the packet from this logical stage.');
+      } else if (/^(?:ct_|arp|nd_|icmp|put_|push|pop|clone|check_pkt_larger)/.test(action)) {
+        descriptions.push(`OVN action: ${action.replace(/;$/, '')}.`);
+      }
+    }
+    return { descriptions, ttl: currentTtl };
+  }
+
+  function appendText(parent, tag, text, className) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.textContent = text;
+    parent.append(node);
+    return node;
+  }
+
+  function renderTraceWorkflow(trace) {
+    const workflow = $('trace-workflow');
+    workflow.replaceChildren();
+    workflow.hidden = false;
+    const parsed = parseTraceStages(trace.output);
+    const input = document.createElement('div');
+    input.className = 'trace-input-summary';
+    [
+      ['Datapath', trace.datapath],
+      ['Ingress port', trace.inport],
+      ['Ethernet source', trace.srcMac],
+      ['Ethernet destination', trace.dstMac],
+      trace.srcIp ? ['IP source', trace.srcIp] : null,
+      trace.dstIp ? ['IP destination', trace.dstIp] : null
+    ].filter(Boolean).forEach(([label, value]) => {
+      const chip = document.createElement('span');
+      chip.className = 'trace-chip';
+      chip.textContent = `${label}: ${value}`;
+      input.append(chip);
+    });
+    workflow.append(input);
+    const flowDetails = document.createElement('details');
+    flowDetails.className = 'trace-flow-details';
+    appendText(flowDetails, 'summary', 'Show complete packet fields');
+    appendText(flowDetails, 'pre', trace.flow);
+    workflow.append(flowDetails);
+
+    if (!parsed.stages.length) {
+      appendText(workflow, 'p',
+        'The trace returned no recognizable logical pipeline stages. Open the raw output below to inspect the result.',
+        'trace-result trace-result-info');
+      return;
+    }
+
+    const allActions = parsed.stages.flatMap(stage => stage.actions);
+    const wasDropped = allActions.some(action => /^drop(?:;|\s)/.test(action));
+    const wasRejected = allActions.some(action => /^reject(?:;|\s)/.test(action));
+    const delivery = allActions.find(action => /^\/\* output to /.test(action) &&
+      !/type "patch"/.test(action));
+    let outcome, outcomeClass;
+    if (wasDropped) {
+      outcome = 'Packet dropped: the logical pipeline contains a drop action.';
+      outcomeClass = 'trace-result trace-result-drop';
+    } else if (wasRejected) {
+      outcome = 'Packet rejected: the logical pipeline contains a reject action.';
+      outcomeClass = 'trace-result trace-result-drop';
+    } else if (delivery) {
+      const target = delivery.match(/output to "([^"]+)"/);
+      outcome = `Logical delivery reached ${target ? `port “${target[1]}”` : 'a logical port'}. This does not prove a real VM received the packet.`;
+      outcomeClass = 'trace-result';
+    } else {
+      outcome = 'Trace completed. Review the final workflow step and raw output to determine the terminal action.';
+      outcomeClass = 'trace-result trace-result-info';
+    }
+    appendText(workflow, 'p', outcome, outcomeClass);
+    appendText(workflow, 'p',
+      'Read from top to bottom. Internal register assignments are omitted; expand raw output for full OVN pipeline detail.',
+      'trace-workflow-help');
+
+    const initialTtlMatch = parsed.packetHeader.match(/nw_ttl=(\d+)/);
+    let currentTtl = initialTtlMatch ? Number(initialTtlMatch[1]) : null;
+    const steps = document.createElement('div');
+    steps.className = 'trace-steps';
+    parsed.stages.forEach((stage, index) => {
+      const step = document.createElement('div');
+      const actionResult = traceActionDescriptions(stage, currentTtl);
+      const actions = actionResult.descriptions;
+      currentTtl = actionResult.ttl;
+      const terminal = actions.some(action => action.includes('drops the packet') || action.includes('rejects the packet'));
+      const delivered = actions.some(action => action.startsWith('Delivers the packet'));
+      step.className = 'trace-step' + (terminal ? ' trace-drop' : delivered ? ' trace-delivery' : '');
+      const marker = appendText(step, 'span', String(index + 1), 'trace-step-marker');
+      marker.setAttribute('aria-hidden', 'true');
+      const card = document.createElement('article');
+      card.className = 'trace-step-card';
+      const kind = stage.pipeline === 'ingress' ? 'Enter logical datapath' : 'Process logical output';
+      appendText(card, 'h4', kind);
+      const location = stage.pipeline === 'ingress'
+        ? `${stage.datapath || 'datapath'} · incoming port: ${stage.inport || 'unknown'}`
+        : `${stage.datapath || 'datapath'} · ${stage.inport || 'unknown'} → ${stage.outport || 'selected output'}`;
+      appendText(card, 'div', location, 'trace-step-location');
+      if (actions.length) {
+        const list = document.createElement('ul');
+        actions.forEach(description => appendText(list, 'li', description));
+        card.append(list);
+      } else {
+        appendText(card, 'p', 'OVN processed this pipeline stage; no packet change or delivery action needs highlighting here.', 'trace-note');
+      }
+      step.append(card);
+      steps.append(step);
+    });
+    workflow.append(steps);
+  }
+
   $('trace-form').addEventListener('submit', async e => {
     e.preventDefault();
     const button = $('trace-submit'), status = $('trace-status'), output = $('trace-output');
@@ -390,7 +563,8 @@ const $ = id => document.getElementById(id);
     button.disabled = true;
     status.className = '';
     status.textContent = 'Running ovn-trace...';
-    output.style.display = 'block';
+    $('trace-workflow').hidden = true;
+    $('trace-raw-details').open = false;
     output.textContent = '';
     try {
       const response = await fetch('/ovn-trace', {
@@ -406,9 +580,15 @@ const $ = id => document.getElementById(id);
         status.className = 'err';
         status.textContent = result.error || 'ovn-trace failed.';
         output.textContent = result.output || '';
+        $('trace-raw-details').open = !!result.output;
       } else {
         status.textContent = 'Completed (exit code ' + result.returncode + ').';
         output.textContent = result.output || '(ovn-trace returned no output)';
+        renderTraceWorkflow({
+          datapath, inport, srcMac, dstMac, srcIp, dstIp,
+          flow: flow.join(' && '),
+          output: result.output || ''
+        });
       }
     } catch (err) {
       status.className = 'err';
